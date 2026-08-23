@@ -33,8 +33,9 @@ test("starts with no notes when stored data is absent or invalid", () => {
 test("saves notes as JSON", () => {
   const storage = new MemoryStorage();
 
-  saveNotes(["A note"], storage);
+  const saved = saveNotes(["A note"], storage);
 
+  assert.equal(saved, true);
   assert.equal(storage.getItem(NOTES_STORAGE_KEY), '["A note"]');
 });
 
@@ -60,5 +61,5 @@ test("continues when retrieving global localStorage throws", (t) => {
   });
 
   assert.deepEqual(loadNotes(), []);
-  assert.doesNotThrow(() => saveNotes(["A note"]));
+  assert.equal(saveNotes(["A note"]), false);
 });
