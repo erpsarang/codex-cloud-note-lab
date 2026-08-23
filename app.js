@@ -7,6 +7,7 @@ const noteList = document.querySelector("#note-list");
 
 function renderNotes() {
   noteList.replaceChildren();
+  const deleteButtons = [];
 
   notes.forEach((note, index) => {
     const listItem = document.createElement("li");
@@ -19,12 +20,18 @@ function renderNotes() {
     deleteButton.setAttribute("aria-label", `Delete ${note}`);
     deleteButton.addEventListener("click", () => {
       deleteNote(notes, index);
-      renderNotes();
+      const remainingDeleteButtons = renderNotes();
+      const adjacentButton = remainingDeleteButtons[Math.min(index, notes.length - 1)];
+
+      (adjacentButton ?? input).focus();
     });
 
     listItem.append(noteText, deleteButton);
     noteList.append(listItem);
+    deleteButtons.push(deleteButton);
   });
+
+  return deleteButtons;
 }
 
 form.addEventListener("submit", (event) => {
