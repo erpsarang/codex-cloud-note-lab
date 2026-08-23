@@ -8,6 +8,11 @@ on:
 
 permissions:
   contents: read
+  issues: write
+
+concurrency:
+  group: self-improvement-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
   self-improvement:
@@ -64,6 +69,38 @@ jobs:
 
             Cite repository file paths and line numbers in the evidence whenever
             possible. Base every claim on repository evidence, not speculation.
+
+      - name: Create improvement candidate issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TRIGGERING_PR: ${{ github.event.pull_request.number }}
+          WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if ! grep -q '[^[:space:]]' improvement-candidate.md; then
+            echo "improvement-candidate.md is empty or contains only whitespace" >&2
+            exit 1
+          fi
+
+          marker="<!-- self-improvement-trigger-pr:${TRIGGERING_PR} -->"
+          existing_issue="$(
+            gh api --paginate "repos/$GH_REPO/issues?state=all&per_page=100" \
+              --jq ".[] | select((has(\"pull_request\") | not) and ((.body // \"\") | contains(\"$marker\"))) | .number"
+          )"
+
+          if [ -n "$existing_issue" ]; then
+            existing_issue="${existing_issue%%$'\n'*}"
+            echo "Reusing Self-Improvement Candidate issue #$existing_issue for PR #$TRIGGERING_PR"
+            exit 0
+          fi
+
+          cat improvement-candidate.md > issue-body.md
+          printf '\n\n%s\n---\nTriggering PR: #%s\nTriggering workflow run: %s\nCreated automatically by the Self-Improvement workflow.\n' \
+            "$marker" "$TRIGGERING_PR" "$WORKFLOW_RUN_URL" >> issue-body.md
+
+          gh issue create \
+            --title "Self-Improvement Candidate" \
+            --body-file issue-body.md
 
       - name: Upload improvement candidate
         uses: actions/upload-artifact@v4
