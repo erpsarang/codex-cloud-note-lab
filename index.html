@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>메모</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="note-app">
+      <h1>메모</h1>
+      <form id="note-form">
+        <label for="note-input">새 메모</label>
+        <textarea id="note-input" rows="4" placeholder="메모를 입력하세요"></textarea>
+        <button type="submit">Add Note</button>
+      </form>
+      <ul id="note-list" aria-live="polite"></ul>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

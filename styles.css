@@ -1,0 +1,51 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f5f5f5;
+  color: #222;
+  font-family: system-ui, sans-serif;
+}
+
+.note-app {
+  width: min(90%, 40rem);
+  margin: 4rem auto;
+}
+
+form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+textarea,
+button {
+  font: inherit;
+}
+
+textarea {
+  padding: 0.75rem;
+  resize: vertical;
+}
+
+button {
+  justify-self: start;
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+}
+
+#note-list {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+
+#note-list li {
+  padding: 1rem;
+  border: 1px solid #ddd;
+  border-radius: 0.25rem;
+  background: white;
+  white-space: pre-wrap;
+}
