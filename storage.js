@@ -6,22 +6,22 @@ export function loadNotes(storage) {
       storage === undefined ? globalThis.localStorage : storage;
 
     if (!availableStorage) {
-      return [];
+      return { ok: false, notes: [] };
     }
 
     const storedNotes = availableStorage.getItem(NOTES_STORAGE_KEY);
 
     if (storedNotes === null) {
-      return [];
+      return { ok: true, notes: [] };
     }
 
     const notes = JSON.parse(storedNotes);
 
     return Array.isArray(notes) && notes.every((note) => typeof note === "string")
-      ? notes
-      : [];
+      ? { ok: true, notes }
+      : { ok: false, notes: [] };
   } catch {
-    return [];
+    return { ok: false, notes: [] };
   }
 }
 

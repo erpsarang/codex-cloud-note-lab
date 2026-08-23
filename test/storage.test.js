@@ -17,17 +17,49 @@ class MemoryStorage {
   }
 }
 
+test("reports an empty store as a successful load", () => {
+  assert.deepEqual(loadNotes(new MemoryStorage()), { ok: true, notes: [] });
+});
+
 test("loads stored notes", () => {
   const storage = new MemoryStorage({
     [NOTES_STORAGE_KEY]: JSON.stringify(["First", "Second"]),
   });
 
-  assert.deepEqual(loadNotes(storage), ["First", "Second"]);
+  assert.deepEqual(loadNotes(storage), {
+    ok: true,
+    notes: ["First", "Second"],
+  });
 });
 
-test("starts with no notes when stored data is absent or invalid", () => {
-  assert.deepEqual(loadNotes(new MemoryStorage()), []);
-  assert.deepEqual(loadNotes(new MemoryStorage({ [NOTES_STORAGE_KEY]: "invalid" })), []);
+test("reports invalid JSON as a failed load", () => {
+  assert.deepEqual(
+    loadNotes(new MemoryStorage({ [NOTES_STORAGE_KEY]: "invalid" })),
+    { ok: false, notes: [] },
+  );
+});
+
+test("reports a non-string-array value as a failed load", () => {
+  for (const storedValue of [{ note: "Not an array" }, ["Valid", 42]]) {
+    assert.deepEqual(
+      loadNotes(
+        new MemoryStorage({
+          [NOTES_STORAGE_KEY]: JSON.stringify(storedValue),
+        }),
+      ),
+      { ok: false, notes: [] },
+    );
+  }
+});
+
+test("reports a getItem exception as a failed load", () => {
+  const storage = {
+    getItem() {
+      throw new Error("Storage access denied");
+    },
+  };
+
+  assert.deepEqual(loadNotes(storage), { ok: false, notes: [] });
 });
 
 test("saves notes as JSON", () => {
@@ -60,6 +92,6 @@ test("continues when retrieving global localStorage throws", (t) => {
     }
   });
 
-  assert.deepEqual(loadNotes(), []);
+  assert.deepEqual(loadNotes(), { ok: false, notes: [] });
   assert.equal(saveNotes(["A note"]), false);
 });
