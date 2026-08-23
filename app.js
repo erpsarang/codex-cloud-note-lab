@@ -1,6 +1,7 @@
 import { addNote, deleteNote } from "./notes.js";
+import { loadNotes, saveNotes } from "./storage.js";
 
-const notes = [];
+const notes = loadNotes();
 const form = document.querySelector("#note-form");
 const input = document.querySelector("#note-input");
 const noteList = document.querySelector("#note-list");
@@ -20,6 +21,7 @@ function renderNotes() {
     deleteButton.setAttribute("aria-label", `Delete ${note}`);
     deleteButton.addEventListener("click", () => {
       deleteNote(notes, index);
+      saveNotes(notes);
       const remainingDeleteButtons = renderNotes();
       const adjacentButton = remainingDeleteButtons[Math.min(index, notes.length - 1)];
 
@@ -41,7 +43,10 @@ form.addEventListener("submit", (event) => {
     return;
   }
 
+  saveNotes(notes);
   renderNotes();
   input.value = "";
   input.focus();
 });
+
+renderNotes();
