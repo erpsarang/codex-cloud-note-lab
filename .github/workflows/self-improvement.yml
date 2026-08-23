@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      improvement-candidate: ${{ steps.codex.outputs.final-output }}
+      improvement-candidate: ${{ steps.codex.outputs.final-message }}
 
     steps:
       - name: Check out latest default branch
@@ -42,6 +42,7 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           sandbox: read-only
+          output-file: improvement-candidate.md
           prompt: |
             Observe the latest checked-out repository and its tests. Review the
             improvements that are already implemented, then find new evidence
@@ -63,11 +64,6 @@ jobs:
 
             Cite repository file paths and line numbers in the evidence whenever
             possible. Base every claim on repository evidence, not speculation.
-
-      - name: Save improvement candidate
-        env:
-          IMPROVEMENT_CANDIDATE: ${{ steps.codex.outputs.final-output }}
-        run: printf '%s\n' "$IMPROVEMENT_CANDIDATE" > improvement-candidate.md
 
       - name: Upload improvement candidate
         uses: actions/upload-artifact@v4
