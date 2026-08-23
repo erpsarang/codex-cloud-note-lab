@@ -9,7 +9,7 @@ test("adds a trimmed non-empty note", () => {
   const added = addNote(notes, "  Buy milk  ");
 
   assert.equal(added, true);
-  assert.deepEqual(notes, ["Buy milk"]);
+  assert.deepEqual(notes, ["Buy bread"]);
 });
 
 test("does not add empty or whitespace-only notes", () => {
