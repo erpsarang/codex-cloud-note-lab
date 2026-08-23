@@ -37,3 +37,28 @@ test("saves notes as JSON", () => {
 
   assert.equal(storage.getItem(NOTES_STORAGE_KEY), '["A note"]');
 });
+
+test("continues when retrieving global localStorage throws", (t) => {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "localStorage",
+  );
+
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    get() {
+      throw new DOMException("Storage access denied", "SecurityError");
+    },
+  });
+
+  t.after(() => {
+    if (originalDescriptor) {
+      Object.defineProperty(globalThis, "localStorage", originalDescriptor);
+    } else {
+      delete globalThis.localStorage;
+    }
+  });
+
+  assert.deepEqual(loadNotes(), []);
+  assert.doesNotThrow(() => saveNotes(["A note"]));
+});

@@ -1,12 +1,15 @@
 export const NOTES_STORAGE_KEY = "notes";
 
-export function loadNotes(storage = globalThis.localStorage) {
-  if (!storage) {
-    return [];
-  }
-
+export function loadNotes(storage) {
   try {
-    const storedNotes = storage.getItem(NOTES_STORAGE_KEY);
+    const availableStorage =
+      storage === undefined ? globalThis.localStorage : storage;
+
+    if (!availableStorage) {
+      return [];
+    }
+
+    const storedNotes = availableStorage.getItem(NOTES_STORAGE_KEY);
 
     if (storedNotes === null) {
       return [];
@@ -22,13 +25,16 @@ export function loadNotes(storage = globalThis.localStorage) {
   }
 }
 
-export function saveNotes(notes, storage = globalThis.localStorage) {
-  if (!storage) {
-    return;
-  }
-
+export function saveNotes(notes, storage) {
   try {
-    storage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
+    const availableStorage =
+      storage === undefined ? globalThis.localStorage : storage;
+
+    if (!availableStorage) {
+      return;
+    }
+
+    availableStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
   } catch {
     // Persistence is best-effort; notes remain available in memory.
   }
