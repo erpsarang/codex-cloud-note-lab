@@ -41,6 +41,7 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          sandbox: read-only
           prompt: |
             Observe the latest checked-out repository and its tests. Review the
             improvements that are already implemented, then find new evidence
