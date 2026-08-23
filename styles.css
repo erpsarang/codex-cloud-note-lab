@@ -43,9 +43,21 @@ button {
 }
 
 #note-list li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
   padding: 1rem;
   border: 1px solid #ddd;
   border-radius: 0.25rem;
   background: white;
   white-space: pre-wrap;
+}
+
+#note-list li span {
+  overflow-wrap: anywhere;
+}
+
+#note-list li button {
+  flex-shrink: 0;
 }
