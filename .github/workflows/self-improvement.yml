@@ -1,7 +1,9 @@
 name: Self-Improvement Candidate
 
 on:
-  pull_request:
+  # This privileged event makes repository secrets available after fork and
+  # Dependabot PRs merge. Never check out or execute the untrusted PR head.
+  pull_request_target:
     types: [closed]
 
 permissions:
@@ -25,6 +27,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Install dependencies
+        run: npm install
 
       - name: Run tests
         run: npm test
