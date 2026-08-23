@@ -1,12 +1,17 @@
 import { addNote, deleteNote } from "./notes.js";
 import { loadNotes, saveNotes } from "./storage.js";
 
-const notes = loadNotes();
+const loadResult = loadNotes();
+const notes = loadResult.notes;
 const form = document.querySelector("#note-form");
 const input = document.querySelector("#note-input");
 const inputError = document.querySelector("#note-error");
 const storageStatus = document.querySelector("#storage-status");
 const noteList = document.querySelector("#note-list");
+
+if (!loadResult.ok) {
+  storageStatus.textContent = "저장된 메모를 불러오지 못했습니다.";
+}
 
 function persistNotes() {
   storageStatus.textContent = saveNotes(notes)

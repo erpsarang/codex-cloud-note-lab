@@ -135,6 +135,76 @@ test("restores notes on initialization and persists additions and deletions", as
   delete globalThis.localStorage;
 });
 
+test("does not show a load error for an empty store", async () => {
+  const form = new FakeElement("form");
+  const input = new FakeElement("textarea");
+  const inputError = new FakeElement("p");
+  const storageStatus = new FakeElement("p");
+  const noteList = new FakeElement("ul");
+  globalThis.localStorage = new MemoryStorage();
+  globalThis.document = {
+    activeElement: null,
+    querySelector(selector) {
+      return {
+        "#note-form": form,
+        "#note-input": input,
+        "#note-error": inputError,
+        "#storage-status": storageStatus,
+        "#note-list": noteList,
+      }[selector];
+    },
+    createElement(tagName) {
+      return new FakeElement(tagName);
+    },
+  };
+
+  await import(`../app.js?empty-storage=${Date.now()}`);
+
+  assert.equal(noteList.children.length, 0);
+  assert.equal(storageStatus.textContent ?? "", "");
+
+  delete globalThis.document;
+  delete globalThis.localStorage;
+});
+
+test("reports an initial load failure without stopping initialization", async () => {
+  const form = new FakeElement("form");
+  const input = new FakeElement("textarea");
+  const inputError = new FakeElement("p");
+  const storageStatus = new FakeElement("p");
+  const noteList = new FakeElement("ul");
+  globalThis.localStorage = {
+    getItem() {
+      throw new Error("Storage access denied");
+    },
+    setItem() {},
+  };
+  globalThis.document = {
+    activeElement: null,
+    querySelector(selector) {
+      return {
+        "#note-form": form,
+        "#note-input": input,
+        "#note-error": inputError,
+        "#storage-status": storageStatus,
+        "#note-list": noteList,
+      }[selector];
+    },
+    createElement(tagName) {
+      return new FakeElement(tagName);
+    },
+  };
+
+  await import(`../app.js?load-failure=${Date.now()}`);
+
+  assert.equal(storageStatus.textContent, "저장된 메모를 불러오지 못했습니다.");
+  assert.equal(noteList.children.length, 0);
+  assert.equal(form.listeners.has("submit"), true);
+
+  delete globalThis.document;
+  delete globalThis.localStorage;
+});
+
 test("keeps additions and deletions working when storage access fails", async () => {
   const form = new FakeElement("form");
   const input = new FakeElement("textarea");
@@ -169,6 +239,8 @@ test("keeps additions and deletions working when storage access fails", async ()
   };
 
   await import(`../app.js?storage-failure=${Date.now()}`);
+
+  assert.equal(storageStatus.textContent, "저장된 메모를 불러오지 못했습니다.");
 
   input.value = "Available in memory";
   form.dispatch("submit");
