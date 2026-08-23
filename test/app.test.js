@@ -53,6 +53,7 @@ test("moves focus to an adjacent delete button, then the input, after deletion",
   const form = new FakeElement("form");
   const input = new FakeElement("textarea");
   const inputError = new FakeElement("p");
+  const storageStatus = new FakeElement("p");
   const noteList = new FakeElement("ul");
   globalThis.localStorage = new MemoryStorage();
 
@@ -63,6 +64,7 @@ test("moves focus to an adjacent delete button, then the input, after deletion",
         "#note-form": form,
         "#note-input": input,
         "#note-error": inputError,
+        "#storage-status": storageStatus,
         "#note-list": noteList,
       }[selector];
     },
@@ -99,6 +101,7 @@ test("restores notes on initialization and persists additions and deletions", as
   const form = new FakeElement("form");
   const input = new FakeElement("textarea");
   const inputError = new FakeElement("p");
+  const storageStatus = new FakeElement("p");
   const noteList = new FakeElement("ul");
   globalThis.localStorage = new MemoryStorage(["Stored note"]);
   globalThis.document = {
@@ -108,6 +111,7 @@ test("restores notes on initialization and persists additions and deletions", as
         "#note-form": form,
         "#note-input": input,
         "#note-error": inputError,
+        "#storage-status": storageStatus,
         "#note-list": noteList,
       }[selector];
     },
@@ -135,13 +139,18 @@ test("keeps additions and deletions working when storage access fails", async ()
   const form = new FakeElement("form");
   const input = new FakeElement("textarea");
   const inputError = new FakeElement("p");
+  const storageStatus = new FakeElement("p");
+  storageStatus.hidden = true;
   const noteList = new FakeElement("ul");
+  let shouldFail = true;
   globalThis.localStorage = {
     getItem() {
       throw new Error("Storage access denied");
     },
     setItem() {
-      throw new Error("Storage quota exceeded");
+      if (shouldFail) {
+        throw new Error("Storage quota exceeded");
+      }
     },
   };
   globalThis.document = {
@@ -151,6 +160,7 @@ test("keeps additions and deletions working when storage access fails", async ()
         "#note-form": form,
         "#note-input": input,
         "#note-error": inputError,
+        "#storage-status": storageStatus,
         "#note-list": noteList,
       }[selector];
     },
@@ -164,10 +174,18 @@ test("keeps additions and deletions working when storage access fails", async ()
   input.value = "Available in memory";
   form.dispatch("submit");
   assert.equal(noteList.children[0].children[0].textContent, "Available in memory");
+  assert.equal(storageStatus.hidden, false);
 
   noteList.children[0].children[1].dispatch("click");
   assert.equal(noteList.children.length, 0);
   assert.equal(document.activeElement, input);
+  assert.equal(storageStatus.hidden, false);
+
+  shouldFail = false;
+  input.value = "Persistence restored";
+  form.dispatch("submit");
+  assert.equal(noteList.children[0].children[0].textContent, "Persistence restored");
+  assert.equal(storageStatus.hidden, true);
 
   delete globalThis.document;
   delete globalThis.localStorage;
@@ -177,6 +195,7 @@ test("shows validation feedback for empty and whitespace-only notes", async () =
   const form = new FakeElement("form");
   const input = new FakeElement("textarea");
   const inputError = new FakeElement("p");
+  const storageStatus = new FakeElement("p");
   const noteList = new FakeElement("ul");
   inputError.hidden = true;
   globalThis.localStorage = new MemoryStorage();
@@ -187,6 +206,7 @@ test("shows validation feedback for empty and whitespace-only notes", async () =
         "#note-form": form,
         "#note-input": input,
         "#note-error": inputError,
+        "#storage-status": storageStatus,
         "#note-list": noteList,
       }[selector];
     },

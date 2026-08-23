@@ -33,9 +33,21 @@ test("starts with no notes when stored data is absent or invalid", () => {
 test("saves notes as JSON", () => {
   const storage = new MemoryStorage();
 
-  saveNotes(["A note"], storage);
+  assert.equal(saveNotes(["A note"], storage), true);
 
   assert.equal(storage.getItem(NOTES_STORAGE_KEY), '["A note"]');
+});
+
+test("reports when storage is unavailable or writing fails", () => {
+  assert.equal(saveNotes(["A note"], null), false);
+  assert.equal(
+    saveNotes(["A note"], {
+      setItem() {
+        throw new Error("Storage quota exceeded");
+      },
+    }),
+    false,
+  );
 });
 
 test("continues when retrieving global localStorage throws", (t) => {
@@ -60,5 +72,5 @@ test("continues when retrieving global localStorage throws", (t) => {
   });
 
   assert.deepEqual(loadNotes(), []);
-  assert.doesNotThrow(() => saveNotes(["A note"]));
+  assert.equal(saveNotes(["A note"]), false);
 });

@@ -5,7 +5,12 @@ const notes = loadNotes();
 const form = document.querySelector("#note-form");
 const input = document.querySelector("#note-input");
 const inputError = document.querySelector("#note-error");
+const storageStatus = document.querySelector("#storage-status");
 const noteList = document.querySelector("#note-list");
+
+function updateStorageStatus(saved) {
+  storageStatus.hidden = saved;
+}
 
 function renderNotes() {
   noteList.replaceChildren();
@@ -22,7 +27,7 @@ function renderNotes() {
     deleteButton.setAttribute("aria-label", `Delete ${note}`);
     deleteButton.addEventListener("click", () => {
       deleteNote(notes, index);
-      saveNotes(notes);
+      updateStorageStatus(saveNotes(notes));
       const remainingDeleteButtons = renderNotes();
       const adjacentButton = remainingDeleteButtons[Math.min(index, notes.length - 1)];
 
@@ -49,7 +54,7 @@ form.addEventListener("submit", (event) => {
 
   inputError.hidden = true;
   input.removeAttribute("aria-invalid");
-  saveNotes(notes);
+  updateStorageStatus(saveNotes(notes));
   renderNotes();
   input.value = "";
   input.focus();
