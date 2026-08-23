@@ -31,11 +31,13 @@ export function saveNotes(notes, storage) {
       storage === undefined ? globalThis.localStorage : storage;
 
     if (!availableStorage) {
-      return;
+      return false;
     }
 
     availableStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
+    return true;
   } catch {
     // Persistence is best-effort; notes remain available in memory.
+    return false;
   }
 }

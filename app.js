@@ -5,7 +5,14 @@ const notes = loadNotes();
 const form = document.querySelector("#note-form");
 const input = document.querySelector("#note-input");
 const inputError = document.querySelector("#note-error");
+const storageStatus = document.querySelector("#storage-status");
 const noteList = document.querySelector("#note-list");
+
+function persistNotes() {
+  storageStatus.textContent = saveNotes(notes)
+    ? ""
+    : "변경 사항이 이 브라우저에 저장되지 않았습니다.";
+}
 
 function renderNotes() {
   noteList.replaceChildren();
@@ -22,7 +29,7 @@ function renderNotes() {
     deleteButton.setAttribute("aria-label", `Delete ${note}`);
     deleteButton.addEventListener("click", () => {
       deleteNote(notes, index);
-      saveNotes(notes);
+      persistNotes();
       const remainingDeleteButtons = renderNotes();
       const adjacentButton = remainingDeleteButtons[Math.min(index, notes.length - 1)];
 
@@ -49,7 +56,7 @@ form.addEventListener("submit", (event) => {
 
   inputError.hidden = true;
   input.removeAttribute("aria-invalid");
-  saveNotes(notes);
+  persistNotes();
   renderNotes();
   input.value = "";
   input.focus();
