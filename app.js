@@ -4,6 +4,7 @@ import { loadNotes, saveNotes } from "./storage.js";
 const notes = loadNotes();
 const form = document.querySelector("#note-form");
 const input = document.querySelector("#note-input");
+const inputError = document.querySelector("#note-error");
 const noteList = document.querySelector("#note-list");
 
 function renderNotes() {
@@ -40,9 +41,14 @@ form.addEventListener("submit", (event) => {
   event.preventDefault();
 
   if (!addNote(notes, input.value)) {
+    inputError.hidden = false;
+    input.setAttribute("aria-invalid", "true");
+    input.focus();
     return;
   }
 
+  inputError.hidden = true;
+  input.removeAttribute("aria-invalid");
   saveNotes(notes);
   renderNotes();
   input.value = "";

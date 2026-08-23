@@ -7,6 +7,7 @@ class FakeElement {
     this.children = [];
     this.listeners = new Map();
     this.value = "";
+    this.hidden = false;
   }
 
   replaceChildren(...children) {
@@ -18,6 +19,8 @@ class FakeElement {
   }
 
   setAttribute() {}
+
+  removeAttribute() {}
 
   addEventListener(type, listener) {
     this.listeners.set(type, listener);
@@ -49,6 +52,7 @@ class MemoryStorage {
 test("moves focus to an adjacent delete button, then the input, after deletion", async () => {
   const form = new FakeElement("form");
   const input = new FakeElement("textarea");
+  const inputError = new FakeElement("p");
   const noteList = new FakeElement("ul");
   globalThis.localStorage = new MemoryStorage();
 
@@ -58,6 +62,7 @@ test("moves focus to an adjacent delete button, then the input, after deletion",
       return {
         "#note-form": form,
         "#note-input": input,
+        "#note-error": inputError,
         "#note-list": noteList,
       }[selector];
     },
@@ -93,6 +98,7 @@ test("moves focus to an adjacent delete button, then the input, after deletion",
 test("restores notes on initialization and persists additions and deletions", async () => {
   const form = new FakeElement("form");
   const input = new FakeElement("textarea");
+  const inputError = new FakeElement("p");
   const noteList = new FakeElement("ul");
   globalThis.localStorage = new MemoryStorage(["Stored note"]);
   globalThis.document = {
@@ -101,6 +107,7 @@ test("restores notes on initialization and persists additions and deletions", as
       return {
         "#note-form": form,
         "#note-input": input,
+        "#note-error": inputError,
         "#note-list": noteList,
       }[selector];
     },
@@ -127,6 +134,7 @@ test("restores notes on initialization and persists additions and deletions", as
 test("keeps additions and deletions working when storage access fails", async () => {
   const form = new FakeElement("form");
   const input = new FakeElement("textarea");
+  const inputError = new FakeElement("p");
   const noteList = new FakeElement("ul");
   globalThis.localStorage = {
     getItem() {
@@ -142,6 +150,7 @@ test("keeps additions and deletions working when storage access fails", async ()
       return {
         "#note-form": form,
         "#note-input": input,
+        "#note-error": inputError,
         "#note-list": noteList,
       }[selector];
     },
@@ -159,6 +168,49 @@ test("keeps additions and deletions working when storage access fails", async ()
   noteList.children[0].children[1].dispatch("click");
   assert.equal(noteList.children.length, 0);
   assert.equal(document.activeElement, input);
+
+  delete globalThis.document;
+  delete globalThis.localStorage;
+});
+
+test("shows validation feedback for empty and whitespace-only notes", async () => {
+  const form = new FakeElement("form");
+  const input = new FakeElement("textarea");
+  const inputError = new FakeElement("p");
+  const noteList = new FakeElement("ul");
+  inputError.hidden = true;
+  globalThis.localStorage = new MemoryStorage();
+  globalThis.document = {
+    activeElement: null,
+    querySelector(selector) {
+      return {
+        "#note-form": form,
+        "#note-input": input,
+        "#note-error": inputError,
+        "#note-list": noteList,
+      }[selector];
+    },
+    createElement(tagName) {
+      return new FakeElement(tagName);
+    },
+  };
+
+  await import(`../app.js?validation=${Date.now()}`);
+
+  for (const invalidValue of ["", " \t\n "]) {
+    input.value = invalidValue;
+    document.activeElement = null;
+    form.dispatch("submit");
+
+    assert.equal(inputError.hidden, false);
+    assert.equal(document.activeElement, input);
+    assert.equal(noteList.children.length, 0);
+  }
+
+  input.value = "Valid note";
+  form.dispatch("submit");
+  assert.equal(inputError.hidden, true);
+  assert.equal(noteList.children[0].children[0].textContent, "Valid note");
 
   delete globalThis.document;
   delete globalThis.localStorage;
