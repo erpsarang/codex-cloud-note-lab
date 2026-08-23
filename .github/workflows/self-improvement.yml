@@ -10,6 +10,10 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: self-improvement-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   self-improvement:
     if: >-
@@ -78,9 +82,21 @@ jobs:
             exit 1
           fi
 
+          marker="<!-- self-improvement-trigger-pr:${TRIGGERING_PR} -->"
+          existing_issue="$(
+            gh api --paginate "repos/$GH_REPO/issues?state=all&per_page=100" \
+              --jq ".[] | select((has(\"pull_request\") | not) and ((.body // \"\") | contains(\"$marker\"))) | .number"
+          )"
+
+          if [ -n "$existing_issue" ]; then
+            existing_issue="${existing_issue%%$'\n'*}"
+            echo "Reusing Self-Improvement Candidate issue #$existing_issue for PR #$TRIGGERING_PR"
+            exit 0
+          fi
+
           cat improvement-candidate.md > issue-body.md
-          printf '\n\n---\nTriggering PR: #%s\nTriggering workflow run: %s\nCreated automatically by the Self-Improvement workflow.\n' \
-            "$TRIGGERING_PR" "$WORKFLOW_RUN_URL" >> issue-body.md
+          printf '\n\n%s\n---\nTriggering PR: #%s\nTriggering workflow run: %s\nCreated automatically by the Self-Improvement workflow.\n' \
+            "$marker" "$TRIGGERING_PR" "$WORKFLOW_RUN_URL" >> issue-body.md
 
           gh issue create \
             --title "Self-Improvement Candidate" \
