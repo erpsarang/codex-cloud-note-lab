@@ -5,13 +5,13 @@ export function loadNotes(storage = globalThis.localStorage) {
     return [];
   }
 
-  const storedNotes = storage.getItem(NOTES_STORAGE_KEY);
-
-  if (storedNotes === null) {
-    return [];
-  }
-
   try {
+    const storedNotes = storage.getItem(NOTES_STORAGE_KEY);
+
+    if (storedNotes === null) {
+      return [];
+    }
+
     const notes = JSON.parse(storedNotes);
 
     return Array.isArray(notes) && notes.every((note) => typeof note === "string")
@@ -27,5 +27,9 @@ export function saveNotes(notes, storage = globalThis.localStorage) {
     return;
   }
 
-  storage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
+  try {
+    storage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
+  } catch {
+    // Persistence is best-effort; notes remain available in memory.
+  }
 }

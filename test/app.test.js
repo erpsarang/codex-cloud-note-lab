@@ -123,3 +123,43 @@ test("restores notes on initialization and persists additions and deletions", as
   delete globalThis.document;
   delete globalThis.localStorage;
 });
+
+test("keeps additions and deletions working when storage access fails", async () => {
+  const form = new FakeElement("form");
+  const input = new FakeElement("textarea");
+  const noteList = new FakeElement("ul");
+  globalThis.localStorage = {
+    getItem() {
+      throw new Error("Storage access denied");
+    },
+    setItem() {
+      throw new Error("Storage quota exceeded");
+    },
+  };
+  globalThis.document = {
+    activeElement: null,
+    querySelector(selector) {
+      return {
+        "#note-form": form,
+        "#note-input": input,
+        "#note-list": noteList,
+      }[selector];
+    },
+    createElement(tagName) {
+      return new FakeElement(tagName);
+    },
+  };
+
+  await import(`../app.js?storage-failure=${Date.now()}`);
+
+  input.value = "Available in memory";
+  form.dispatch("submit");
+  assert.equal(noteList.children[0].children[0].textContent, "Available in memory");
+
+  noteList.children[0].children[1].dispatch("click");
+  assert.equal(noteList.children.length, 0);
+  assert.equal(document.activeElement, input);
+
+  delete globalThis.document;
+  delete globalThis.localStorage;
+});
