@@ -11,7 +11,13 @@
       <h1>메모</h1>
       <form id="note-form">
         <label for="note-input">새 메모</label>
-        <textarea id="note-input" rows="4" placeholder="메모를 입력하세요"></textarea>
+        <textarea
+          id="note-input"
+          rows="4"
+          placeholder="메모를 입력하세요"
+          aria-describedby="note-error"
+        ></textarea>
+        <p id="note-error" role="alert" hidden>메모 내용을 입력하세요.</p>
         <button type="submit">Add Note</button>
       </form>
       <ul id="note-list" aria-live="polite"></ul>
