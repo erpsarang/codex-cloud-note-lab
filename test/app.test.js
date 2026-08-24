@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 class FakeElement {
   constructor(tagName) {
     this.tagName = tagName;
     this.children = [];
     this.listeners = new Map();
+    this.attributes = new Map();
     this.value = "";
     this.hidden = false;
   }
@@ -18,9 +20,17 @@ class FakeElement {
     this.children.push(...children);
   }
 
-  setAttribute() {}
+  setAttribute(name, value) {
+    this.attributes.set(name, value);
+  }
 
-  removeAttribute() {}
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  }
+
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  }
 
   addEventListener(type, listener) {
     this.listeners.set(type, listener);
@@ -34,6 +44,12 @@ class FakeElement {
     document.activeElement = this;
   }
 }
+
+test("shows a Korean submit button label", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  assert.match(html, /<button type="submit">메모 추가<\/button>/);
+});
 
 class MemoryStorage {
   constructor(notes = null) {
@@ -123,6 +139,11 @@ test("restores notes on initialization and persists additions and deletions", as
   await import(`../app.js?test=${Date.now()}`);
 
   assert.equal(noteList.children[0].children[0].textContent, "Stored note");
+  assert.equal(noteList.children[0].children[1].textContent, "삭제");
+  assert.equal(
+    noteList.children[0].children[1].getAttribute("aria-label"),
+    "Stored note 삭제",
+  );
 
   input.value = "New note";
   form.dispatch("submit");
