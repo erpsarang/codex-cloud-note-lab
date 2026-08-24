@@ -1,0 +1,57 @@
+name: Approval Automation
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: approval-automation-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  request-codex-implementation:
+    if: >-
+      github.event.label.name == 'approved' &&
+      github.event.sender.type == 'User' &&
+      github.event.issue.title == 'Self-Improvement Candidate' &&
+      contains(github.event.issue.body, '<!-- self-improvement-trigger-pr:')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Request implementation from Codex
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          marker='<!-- approval-automation:codex-implementation-request -->'
+          existing_comment="$(
+            gh api --paginate "repos/$GH_REPO/issues/$ISSUE_NUMBER/comments?per_page=100" \
+              --jq ".[] | select((.body // \"\") | contains(\"$marker\")) | .id"
+          )"
+
+          if [ -n "$existing_comment" ]; then
+            echo "Codex implementation was already requested for issue #$ISSUE_NUMBER"
+            exit 0
+          fi
+
+          cat > codex-request.md <<EOF
+          @codex 이 Issue의 Improvement Candidate를 구현해 주세요.
+
+          - Issue 본문의 Observation, Evidence, Expected Change, Verification을 기준으로 구현
+          - 범위를 불필요하게 확장하지 않음
+          - 필요한 테스트 추가 또는 수정
+          - npm test 실행
+          - Pull Request 생성
+          - PR 본문에 \`Closes #$ISSUE_NUMBER\` 포함
+          - 자동 merge 금지
+
+          $marker
+          EOF
+
+          gh issue comment "$ISSUE_NUMBER" --body-file codex-request.md
