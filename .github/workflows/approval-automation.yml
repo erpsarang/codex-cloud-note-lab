@@ -112,6 +112,16 @@ jobs:
         with:
           node-version: 20
 
+      - name: Verify implementation changes
+        if: >-
+          steps.existing-pr.outputs.exists != 'true' &&
+          steps.existing-branch.outputs.exists != 'true'
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Codex did not produce any implementation changes" >&2
+            exit 1
+          fi
+
       - name: Install dependencies
         if: >-
           steps.existing-pr.outputs.exists != 'true' &&
@@ -124,25 +134,26 @@ jobs:
           steps.existing-branch.outputs.exists != 'true'
         run: npm test
 
-      - name: Commit and push implementation
+      - name: Commit implementation
         if: >-
           steps.existing-pr.outputs.exists != 'true' &&
           steps.existing-branch.outputs.exists != 'true'
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-          PUBLISH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
         run: |
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "Codex did not produce any implementation changes" >&2
-            exit 1
-          fi
-
           git switch -c "$IMPLEMENTATION_BRANCH"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add --all
           git commit -m "Implement self-improvement candidate #$ISSUE_NUMBER"
 
+      - name: Push implementation
+        if: >-
+          steps.existing-pr.outputs.exists != 'true' &&
+          steps.existing-branch.outputs.exists != 'true'
+        env:
+          PUBLISH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
+        run: |
           # Supply the publication credential only to this trusted command. The
           # checkout and generated install/test code never receive a write token.
           basic_auth="$(printf 'x-access-token:%s' "$PUBLISH_TOKEN" | base64 | tr -d '\n')"
