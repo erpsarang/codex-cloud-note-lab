@@ -32,7 +32,7 @@ jobs:
           marker='<!-- approval-automation:codex-implementation-request -->'
           existing_comment="$(
             gh api --paginate "repos/$GH_REPO/issues/$ISSUE_NUMBER/comments?per_page=100" \
-              --jq ".[] | select((.body // \"\") | contains(\"$marker\")) | .id"
+              --jq ".[] | select(.user.login == \"github-actions[bot]\" and ((.body // \"\") | contains(\"$marker\"))) | .id"
           )"
 
           if [ -n "$existing_comment" ]; then
