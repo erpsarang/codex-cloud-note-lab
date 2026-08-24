@@ -30,8 +30,8 @@ function renderNotes() {
 
     noteText.textContent = note;
     deleteButton.type = "button";
-    deleteButton.textContent = "Delete";
-    deleteButton.setAttribute("aria-label", `Delete ${note}`);
+    deleteButton.textContent = "삭제";
+    deleteButton.setAttribute("aria-label", `${note} 삭제`);
     deleteButton.addEventListener("click", () => {
       deleteNote(notes, index);
       persistNotes();
