@@ -27,6 +27,7 @@ jobs:
     outputs:
       existing_pr: ${{ steps.existing-pr.outputs.exists }}
       existing_branch: ${{ steps.existing-branch.outputs.exists }}
+      base_sha: ${{ steps.implementation-base.outputs.sha }}
 
     steps:
       # Only the latest default branch is trusted as executable repository input.
@@ -37,6 +38,10 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Record implementation base
+        id: implementation-base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Check for an existing implementation pull request
         id: existing-pr
@@ -167,10 +172,12 @@ jobs:
     steps:
       # Publication starts on a fresh runner. No process, hook, or other state
       # created by generated code in the implement job can cross this boundary.
-      - name: Check out clean default branch
+      - name: Check out exact implementation base
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          # Pin the clean publication checkout to the commit against which the
+          # implementation was generated and tested, even if the branch moves.
+          ref: ${{ needs.implement.outputs.base_sha }}
           fetch-depth: 0
           persist-credentials: false
 
