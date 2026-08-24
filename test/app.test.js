@@ -315,11 +315,22 @@ test("shows validation feedback for empty and whitespace-only notes", async () =
     form.dispatch("submit");
 
     assert.equal(inputError.hidden, false);
+    assert.equal(input.getAttribute("aria-invalid"), "true");
     assert.equal(document.activeElement, input);
     assert.equal(noteList.children.length, 0);
   }
 
+  input.value = " \t ";
+  input.dispatch("input");
+  assert.equal(inputError.hidden, false);
+  assert.equal(input.getAttribute("aria-invalid"), "true");
+
   input.value = "Valid note";
+  input.dispatch("input");
+  assert.equal(inputError.hidden, true);
+  assert.equal(input.getAttribute("aria-invalid"), null);
+  assert.equal(noteList.children.length, 0);
+
   form.dispatch("submit");
   assert.equal(inputError.hidden, true);
   assert.equal(noteList.children[0].children[0].textContent, "Valid note");
