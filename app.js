@@ -49,6 +49,13 @@ function renderNotes() {
   return deleteButtons;
 }
 
+input.addEventListener("input", () => {
+  if (input.value.trim()) {
+    inputError.hidden = true;
+    input.removeAttribute("aria-invalid");
+  }
+});
+
 form.addEventListener("submit", (event) => {
   event.preventDefault();
 
