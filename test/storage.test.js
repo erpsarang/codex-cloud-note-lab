@@ -52,6 +52,14 @@ test("reports a non-string-array value as a failed load", () => {
   }
 });
 
+test("reports a whitespace-only stored note as a failed load", () => {
+  const storage = new MemoryStorage({
+    [NOTES_STORAGE_KEY]: JSON.stringify(["Valid", "   "]),
+  });
+
+  assert.deepEqual(loadNotes(storage), { ok: false, notes: [] });
+});
+
 test("reports a getItem exception as a failed load", () => {
   const storage = {
     getItem() {

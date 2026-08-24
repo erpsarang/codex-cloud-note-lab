@@ -17,7 +17,10 @@ export function loadNotes(storage) {
 
     const notes = JSON.parse(storedNotes);
 
-    return Array.isArray(notes) && notes.every((note) => typeof note === "string")
+    return Array.isArray(notes) &&
+      notes.every(
+        (note) => typeof note === "string" && note.trim().length > 0,
+      )
       ? { ok: true, notes }
       : { ok: false, notes: [] };
   } catch {
