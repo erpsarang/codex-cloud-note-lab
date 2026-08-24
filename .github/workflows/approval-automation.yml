@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  implement-approved-candidate:
+  implement:
     if: >-
       github.event.label.name == 'approved' &&
       github.event.sender.type == 'User' &&
@@ -24,6 +24,9 @@ jobs:
     timeout-minutes: 30
     env:
       IMPLEMENTATION_BRANCH: codex/self-improvement-${{ github.event.issue.number }}
+    outputs:
+      existing_pr: ${{ steps.existing-pr.outputs.exists }}
+      existing_branch: ${{ steps.existing-branch.outputs.exists }}
 
     steps:
       # Only the latest default branch is trusted as executable repository input.
@@ -134,34 +137,77 @@ jobs:
           steps.existing-branch.outputs.exists != 'true'
         run: npm test
 
-      - name: Commit implementation
+      - name: Package implementation patch
         if: >-
           steps.existing-pr.outputs.exists != 'true' &&
           steps.existing-branch.outputs.exists != 'true'
+        run: |
+          git add --all
+          git diff --cached --binary --full-index > "$RUNNER_TEMP/implementation.patch"
+
+      - name: Upload implementation patch
+        if: >-
+          steps.existing-pr.outputs.exists != 'true' &&
+          steps.existing-branch.outputs.exists != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: implementation-${{ github.event.issue.number }}
+          path: ${{ runner.temp }}/implementation.patch
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: implement
+    if: needs.implement.outputs.existing_pr != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      IMPLEMENTATION_BRANCH: codex/self-improvement-${{ github.event.issue.number }}
+
+    steps:
+      # Publication starts on a fresh runner. No process, hook, or other state
+      # created by generated code in the implement job can cross this boundary.
+      - name: Check out clean default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download implementation patch
+        if: needs.implement.outputs.existing_branch != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: implementation-${{ github.event.issue.number }}
+          path: ${{ runner.temp }}/implementation
+
+      - name: Apply and commit implementation patch
+        if: needs.implement.outputs.existing_branch != 'true'
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
+          # Applying data does not execute generated files. Explicitly disabling
+          # hooks also prevents repository content from affecting the commit.
           git switch -c "$IMPLEMENTATION_BRANCH"
+          git apply --index --binary "$RUNNER_TEMP/implementation/implementation.patch"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add --all
-          git commit -m "Implement self-improvement candidate #$ISSUE_NUMBER"
+          git -c core.hooksPath=/dev/null commit \
+            -m "Implement self-improvement candidate #$ISSUE_NUMBER"
 
       - name: Push implementation
-        if: >-
-          steps.existing-pr.outputs.exists != 'true' &&
-          steps.existing-branch.outputs.exists != 'true'
+        if: needs.implement.outputs.existing_branch != 'true'
         env:
           PUBLISH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
         run: |
-          # Supply the publication credential only to this trusted command. The
-          # checkout and generated install/test code never receive a write token.
+          # The write credential exists only for this trusted command on the clean
+          # runner. --no-verify and the disabled hook path are defense in depth.
           basic_auth="$(printf 'x-access-token:%s' "$PUBLISH_TOKEN" | base64 | tr -d '\n')"
-          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic_auth" \
-            push --set-upstream origin "$IMPLEMENTATION_BRANCH"
+          git -c core.hooksPath=/dev/null \
+            -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic_auth" \
+            push --no-verify --set-upstream origin "$IMPLEMENTATION_BRANCH"
 
       - name: Create implementation pull request
-        if: steps.existing-pr.outputs.exists != 'true'
         env:
           # A GitHub App installation token or PAT is required here so the push
           # and pull_request events start the repository's normal CI workflows.
@@ -170,7 +216,8 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          cat > pull-request-body.md <<EOF
+          body_file="$RUNNER_TEMP/pull-request-body.md"
+          cat > "$body_file" <<EOF
           ## Summary
           - Implements the approved Self-Improvement Candidate from #$ISSUE_NUMBER
           - Includes the code and test changes produced within the candidate's stated scope
@@ -186,4 +233,4 @@ jobs:
             --base "$DEFAULT_BRANCH" \
             --head "$IMPLEMENTATION_BRANCH" \
             --title "Implement self-improvement candidate #$ISSUE_NUMBER" \
-            --body-file pull-request-body.md
+            --body-file "$body_file"
