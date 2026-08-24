@@ -5,9 +5,9 @@ on:
     types: [labeled]
 
 permissions:
-  contents: write
+  contents: read
   issues: read
-  pull-requests: write
+  pull-requests: read
 
 concurrency:
   group: approval-automation-${{ github.event.issue.number }}
@@ -33,6 +33,7 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check for an existing implementation pull request
         id: existing-pr
@@ -56,8 +57,33 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Implement the approved candidate
+      - name: Check for an existing implementation branch
         if: steps.existing-pr.outputs.exists != 'true'
+        id: existing-branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          encoded_branch="$(jq -rn --arg branch "$IMPLEMENTATION_BRANCH" '$branch | @uri')"
+          branch_count="$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/{owner}/{repo}/git/matching-refs/heads/$encoded_branch" |
+              jq --arg ref "refs/heads/$IMPLEMENTATION_BRANCH" \
+                '[.[] | select(.ref == $ref)] | length'
+          )"
+          if [ "$branch_count" -eq 1 ]; then
+            echo "Remote branch $IMPLEMENTATION_BRANCH already exists; its missing pull request will be recovered"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Implement the approved candidate
+        if: >-
+          steps.existing-pr.outputs.exists != 'true' &&
+          steps.existing-branch.outputs.exists != 'true'
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -79,25 +105,34 @@ jobs:
             ----- END UNTRUSTED ISSUE BODY -----
 
       - name: Set up Node.js
-        if: steps.existing-pr.outputs.exists != 'true'
+        if: >-
+          steps.existing-pr.outputs.exists != 'true' &&
+          steps.existing-branch.outputs.exists != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Install dependencies
-        if: steps.existing-pr.outputs.exists != 'true'
+        if: >-
+          steps.existing-pr.outputs.exists != 'true' &&
+          steps.existing-branch.outputs.exists != 'true'
         run: npm install
 
       - name: Run tests
-        if: steps.existing-pr.outputs.exists != 'true'
+        if: >-
+          steps.existing-pr.outputs.exists != 'true' &&
+          steps.existing-branch.outputs.exists != 'true'
         run: npm test
 
       - name: Commit and push implementation
-        if: steps.existing-pr.outputs.exists != 'true'
+        if: >-
+          steps.existing-pr.outputs.exists != 'true' &&
+          steps.existing-branch.outputs.exists != 'true'
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PUBLISH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
         run: |
-          if git diff --quiet && git diff --cached --quiet; then
+          if [ -z "$(git status --porcelain)" ]; then
             echo "Codex did not produce any implementation changes" >&2
             exit 1
           fi
@@ -107,12 +142,19 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add --all
           git commit -m "Implement self-improvement candidate #$ISSUE_NUMBER"
-          git push --set-upstream origin "$IMPLEMENTATION_BRANCH"
+
+          # Supply the publication credential only to this trusted command. The
+          # checkout and generated install/test code never receive a write token.
+          basic_auth="$(printf 'x-access-token:%s' "$PUBLISH_TOKEN" | base64 | tr -d '\n')"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic_auth" \
+            push --set-upstream origin "$IMPLEMENTATION_BRANCH"
 
       - name: Create implementation pull request
         if: steps.existing-pr.outputs.exists != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          # A GitHub App installation token or PAT is required here so the push
+          # and pull_request events start the repository's normal CI workflows.
+          GH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
           GH_REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
