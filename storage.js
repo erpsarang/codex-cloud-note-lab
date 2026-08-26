@@ -21,7 +21,7 @@ export function loadNotes(storage) {
       notes.every(
         (note) => typeof note === "string" && note.trim().length > 0,
       )
-      ? { ok: true, notes }
+      ? { ok: true, notes: notes.map((note) => note.trim()) }
       : { ok: false, notes: [] };
   } catch {
     return { ok: false, notes: [] };

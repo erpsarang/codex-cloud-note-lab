@@ -32,6 +32,14 @@ test("loads stored notes", () => {
   });
 });
 
+test("trims surrounding whitespace from stored notes", () => {
+  const storage = new MemoryStorage({
+    [NOTES_STORAGE_KEY]: JSON.stringify(["  Buy milk  "]),
+  });
+
+  assert.deepEqual(loadNotes(storage), { ok: true, notes: ["Buy milk"] });
+});
+
 test("reports invalid JSON as a failed load", () => {
   assert.deepEqual(
     loadNotes(new MemoryStorage({ [NOTES_STORAGE_KEY]: "invalid" })),
