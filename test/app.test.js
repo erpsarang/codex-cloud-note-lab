@@ -45,10 +45,14 @@ class FakeElement {
   }
 }
 
-test("shows a Korean submit button label", async () => {
+test("includes Korean submit and empty-state labels", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 
   assert.match(html, /<button type="submit">메모 추가<\/button>/);
+  assert.match(
+    html,
+    /<p id="empty-state" hidden>저장된 메모가 없습니다\.<\/p>/,
+  );
 });
 
 class MemoryStorage {
@@ -70,6 +74,7 @@ test("moves focus to an adjacent delete button, then the input, after deletion",
   const input = new FakeElement("textarea");
   const inputError = new FakeElement("p");
   const storageStatus = new FakeElement("p");
+  const emptyState = new FakeElement("p");
   const noteList = new FakeElement("ul");
   globalThis.localStorage = new MemoryStorage();
 
@@ -81,6 +86,7 @@ test("moves focus to an adjacent delete button, then the input, after deletion",
         "#note-input": input,
         "#note-error": inputError,
         "#storage-status": storageStatus,
+        "#empty-state": emptyState,
         "#note-list": noteList,
       }[selector];
     },
@@ -118,6 +124,7 @@ test("restores notes on initialization and persists additions and deletions", as
   const input = new FakeElement("textarea");
   const inputError = new FakeElement("p");
   const storageStatus = new FakeElement("p");
+  const emptyState = new FakeElement("p");
   const noteList = new FakeElement("ul");
   globalThis.localStorage = new MemoryStorage(["Stored note"]);
   globalThis.document = {
@@ -128,6 +135,7 @@ test("restores notes on initialization and persists additions and deletions", as
         "#note-input": input,
         "#note-error": inputError,
         "#storage-status": storageStatus,
+        "#empty-state": emptyState,
         "#note-list": noteList,
       }[selector];
     },
@@ -161,6 +169,7 @@ test("does not show a load error for an empty store", async () => {
   const input = new FakeElement("textarea");
   const inputError = new FakeElement("p");
   const storageStatus = new FakeElement("p");
+  const emptyState = new FakeElement("p");
   const noteList = new FakeElement("ul");
   globalThis.localStorage = new MemoryStorage();
   globalThis.document = {
@@ -171,6 +180,7 @@ test("does not show a load error for an empty store", async () => {
         "#note-input": input,
         "#note-error": inputError,
         "#storage-status": storageStatus,
+        "#empty-state": emptyState,
         "#note-list": noteList,
       }[selector];
     },
@@ -183,6 +193,14 @@ test("does not show a load error for an empty store", async () => {
 
   assert.equal(noteList.children.length, 0);
   assert.equal(storageStatus.textContent ?? "", "");
+  assert.equal(emptyState.hidden, false);
+
+  input.value = "First note";
+  form.dispatch("submit");
+  assert.equal(emptyState.hidden, true);
+
+  noteList.children[0].children[1].dispatch("click");
+  assert.equal(emptyState.hidden, false);
 
   delete globalThis.document;
   delete globalThis.localStorage;
@@ -193,6 +211,7 @@ test("reports an initial load failure without stopping initialization", async ()
   const input = new FakeElement("textarea");
   const inputError = new FakeElement("p");
   const storageStatus = new FakeElement("p");
+  const emptyState = new FakeElement("p");
   const noteList = new FakeElement("ul");
   globalThis.localStorage = {
     getItem() {
@@ -208,6 +227,7 @@ test("reports an initial load failure without stopping initialization", async ()
         "#note-input": input,
         "#note-error": inputError,
         "#storage-status": storageStatus,
+        "#empty-state": emptyState,
         "#note-list": noteList,
       }[selector];
     },
@@ -231,6 +251,7 @@ test("keeps additions and deletions working when storage access fails", async ()
   const input = new FakeElement("textarea");
   const inputError = new FakeElement("p");
   const storageStatus = new FakeElement("p");
+  const emptyState = new FakeElement("p");
   const noteList = new FakeElement("ul");
   let storageShouldFail = true;
   globalThis.localStorage = {
@@ -251,6 +272,7 @@ test("keeps additions and deletions working when storage access fails", async ()
         "#note-input": input,
         "#note-error": inputError,
         "#storage-status": storageStatus,
+        "#empty-state": emptyState,
         "#note-list": noteList,
       }[selector];
     },
@@ -288,6 +310,7 @@ test("shows validation feedback for empty and whitespace-only notes", async () =
   const input = new FakeElement("textarea");
   const inputError = new FakeElement("p");
   const storageStatus = new FakeElement("p");
+  const emptyState = new FakeElement("p");
   const noteList = new FakeElement("ul");
   inputError.hidden = true;
   globalThis.localStorage = new MemoryStorage();
@@ -299,6 +322,7 @@ test("shows validation feedback for empty and whitespace-only notes", async () =
         "#note-input": input,
         "#note-error": inputError,
         "#storage-status": storageStatus,
+        "#empty-state": emptyState,
         "#note-list": noteList,
       }[selector];
     },
