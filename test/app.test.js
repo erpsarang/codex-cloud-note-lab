@@ -240,6 +240,7 @@ test("reports an initial load failure without stopping initialization", async ()
 
   assert.equal(storageStatus.textContent, "저장된 메모를 불러오지 못했습니다.");
   assert.equal(noteList.children.length, 0);
+  assert.equal(emptyState.hidden, true);
   assert.equal(form.listeners.has("submit"), true);
 
   delete globalThis.document;

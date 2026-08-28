@@ -22,7 +22,7 @@ function persistNotes() {
 
 function renderNotes() {
   noteList.replaceChildren();
-  emptyState.hidden = notes.length > 0;
+  emptyState.hidden = !loadResult.ok || notes.length > 0;
   const deleteButtons = [];
 
   notes.forEach((note, index) => {
