@@ -104,3 +104,12 @@ test('AI stage is review-only and exposes no automated fix contract', async () =
   assert.doesNotMatch(review, /reviewFixAttempts/);
   assert.doesNotMatch(trusted, /\.reviewFixAttempts/);
 });
+
+test('AI review accepts only one verdict with PASS as the final nonempty line', async () => {
+  const review = await workflow('review-fix.yml');
+
+  assert.match(review, /\^\[\[:space:\]\]\*VERDICT:/);
+  assert.match(review, /verdict_count != 1/);
+  assert.match(review, /last_nonempty != "VERDICT: PASS"/);
+  assert.doesNotMatch(review, /grep -Fx 'VERDICT: PASS'/);
+});

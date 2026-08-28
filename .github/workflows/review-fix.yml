@@ -206,7 +206,15 @@ jobs:
         env:
           HEAD_SHA: ${{ needs.authorize.outputs.head }}
         run: |
-          grep -Fx 'VERDICT: PASS' "$RUNNER_TEMP/final-review.md"
+          awk '
+            /^[[:space:]]*VERDICT:/ { verdict_count++ }
+            NF { last_nonempty = $0 }
+            END {
+              if (verdict_count != 1 || last_nonempty != "VERDICT: PASS") {
+                exit 1
+              }
+            }
+          ' "$RUNNER_TEMP/final-review.md"
           jq -n -S --arg head "$HEAD_SHA" '{finalReview:"PASS",finalReviewSha:$head}' > "$RUNNER_TEMP/review-result.json"
       - uses: actions/upload-artifact@v4
         with:
