@@ -25,6 +25,21 @@ test('Review binds MERGE_READY to the successful merge CI run', async () => {
   assert.match(review, /testedBaseSha:\$t\.testedBaseSha,testedHeadSha:\$t\.testedHeadSha,testedResultTree:\$t\.testedResultTree/);
 });
 
+test('Review accepts only the exact CI run created by its trusted dispatch', async () => {
+  const ci = await workflow('ci.yml');
+  const review = await workflow('review-fix.yml');
+
+  assert.match(ci, /run-name: prospective-merge-\$\{\{ inputs\.tested_base_sha[^\n]+inputs\.tested_head_sha[^\n]+inputs\.contract_nonce/);
+  assert.match(review, /nonce="\$\(openssl rand -hex 32\)"/);
+  assert.match(review, /title="prospective-merge-\$BASE_SHA-\$HEAD_SHA-\$nonce"/);
+  assert.match(review, /Ambiguous CI dispatch provenance/);
+  assert.match(review, /\.workflow_id == \$workflow_id and \.path == \$path/);
+  assert.match(review, /\.actor\.login == \$actor and \.actor\.id == \$actor_id/);
+  assert.match(review, /\.triggering_actor\.login == \$actor and \.triggering_actor\.id == \$actor_id/);
+  assert.match(review, /\.created_at >= \$since/);
+  assert.doesNotMatch(review, /if length == 1 then \.\[0\] else empty end/);
+});
+
 test('publication provenance is immutable and authorizes the exact current head', async () => {
   const publication = await workflow('approval-automation.yml');
   const review = await workflow('review-fix.yml');

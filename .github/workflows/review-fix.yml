@@ -133,21 +133,42 @@ jobs:
           HEAD_SHA: ${{ needs.authorize.outputs.head }}
           BASE_BRANCH: ${{ needs.authorize.outputs.base_branch }}
           RESULT_TREE: ${{ steps.merge.outputs.tree }}
+          EXPECTED_ACTOR: ${{ github.actor }}
+          EXPECTED_ACTOR_ID: ${{ github.actor_id }}
         run: |
           set -euo pipefail
-          nonce="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          title="prospective-merge-$nonce"
+          nonce="$(openssl rand -hex 32)"
+          # run-name is evaluated from the immutable workflow on BASE_BRANCH, so
+          # this exact title authenticates all three workflow_dispatch inputs.
+          title="prospective-merge-$BASE_SHA-$HEAD_SHA-$nonce"
+          workflow="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml")"
+          workflow_id="$(jq -r .id <<<"$workflow")"
+          test "$workflow_id" != null
+          dispatch_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run ci.yml --repo "$GH_REPO" --ref "$BASE_BRANCH" -f tested_base_sha="$BASE_SHA" -f tested_head_sha="$HEAD_SHA" -f contract_nonce="$nonce"
           for attempt in $(seq 1 30); do
-            runs="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=$BASE_BRANCH")"
-            run="$(jq -c --arg title "$title" '[.workflow_runs[] | select(.display_title == $title)] | if length == 1 then .[0] else empty end' <<<"$runs")"
-            if [ -n "$run" ]; then
-              run_id="$(jq -r .id <<<"$run")"
+            runs="$(gh api --paginate "repos/$GH_REPO/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=$BASE_BRANCH&per_page=100" --slurp)"
+            matches="$(jq -c --arg title "$title" --arg since "$dispatch_started_at" \
+              '[.[].workflow_runs[] | select(.display_title == $title and .created_at >= $since)]' <<<"$runs")"
+            match_count="$(jq 'length' <<<"$matches")"
+            [ "$match_count" -le 1 ] || { echo "Ambiguous CI dispatch provenance" >&2; exit 1; }
+            if [ "$match_count" -eq 1 ]; then
+              run_id="$(jq -r '.[0].id' <<<"$matches")"
+              # Re-read the exact run rather than trusting the mutable list result.
+              run="$(gh api "repos/$GH_REPO/actions/runs/$run_id")"
+              jq -e --arg title "$title" --arg path ".github/workflows/ci.yml" \
+                --argjson workflow_id "$workflow_id" --arg base "$BASE_SHA" --arg head "$HEAD_SHA" \
+                --arg nonce "$nonce" --arg branch "$BASE_BRANCH" --arg since "$dispatch_started_at" \
+                --arg actor "$EXPECTED_ACTOR" --argjson actor_id "$EXPECTED_ACTOR_ID" '
+                .event == "workflow_dispatch" and .workflow_id == $workflow_id and .path == $path and
+                .display_title == $title and .head_branch == $branch and .head_sha == $base and
+                .run_attempt == 1 and .created_at >= $since and
+                .actor.login == $actor and .actor.id == $actor_id and
+                .triggering_actor.login == $actor and .triggering_actor.id == $actor_id' \
+                <<<"$run" >/dev/null
               conclusion="$(jq -r '.conclusion // ""' <<<"$run")"
               [ "$conclusion" != failure ] && [ "$conclusion" != cancelled ] || exit 1
               [ "$conclusion" = success ] || { sleep 10; continue; }
-              jq -e --arg base "$BASE_SHA" --arg path ".github/workflows/ci.yml" \
-                '.event == "workflow_dispatch" and .head_sha == $base and .path == $path and .run_attempt == 1' <<<"$run" >/dev/null
               jq -n -S --arg base "$BASE_SHA" --arg head "$HEAD_SHA" --arg tree "$RESULT_TREE" --argjson run "$run_id" \
                 '{testResult:"PASS",testedBaseSha:$base,testedHeadSha:$head,testedResultTree:$tree,ciRunId:$run}' > "$RUNNER_TEMP/test-result.json"
               exit 0

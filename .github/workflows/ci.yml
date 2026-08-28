@@ -1,5 +1,5 @@
 name: CI
-run-name: prospective-merge-${{ inputs.contract_nonce || github.sha }}
+run-name: prospective-merge-${{ inputs.tested_base_sha || github.sha }}-${{ inputs.tested_head_sha || github.sha }}-${{ inputs.contract_nonce || github.sha }}
 
 on:
   push:
