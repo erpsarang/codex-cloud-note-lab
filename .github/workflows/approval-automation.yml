@@ -5,9 +5,10 @@ on:
     types: [labeled]
 
 permissions:
-  contents: read
+  actions: write
+  contents: write
   issues: read
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: approval-automation-${{ github.event.issue.number }}
@@ -203,10 +204,10 @@ jobs:
           git -c core.hooksPath=/dev/null commit \
             -m "자기개선 후보 #$ISSUE_NUMBER 구현"
 
-      - name: Push implementation
+      - name: Push implementation with the workflow-scoped token
         if: needs.implement.outputs.existing_branch != 'true'
         env:
-          PUBLISH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
+          PUBLISH_TOKEN: ${{ github.token }}
         run: |
           # The write credential exists only for this trusted command on the clean
           # runner. --no-verify and the disabled hook path are defense in depth.
@@ -217,9 +218,9 @@ jobs:
 
       - name: Create implementation pull request
         env:
-          # A GitHub App installation token or PAT is required here so the push
-          # and pull_request events start the repository's normal CI workflows.
-          GH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
+          # This workflow-scoped token can publish the candidate but is not the
+          # protected merge credential used by Trusted Merge.
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -233,12 +234,21 @@ jobs:
 
           Closes #$ISSUE_NUMBER
 
-          이 pull request는 자동으로 생성되었습니다. 반드시 사람이 검토하고 merge해야 합니다.
+          <!-- self-improvement-candidate:$ISSUE_NUMBER -->
+          이 pull request는 자동으로 생성되었습니다. Review/Fix workflow는 검증된
+          MERGE_READY artifact만 만들며 실제 merge는 별도의 Trusted Merge workflow가 수행합니다.
           EOF
 
-          gh pr create \
+          pr_url="$(gh pr create \
             --repo "$GH_REPO" \
             --base "$DEFAULT_BRANCH" \
             --head "$IMPLEMENTATION_BRANCH" \
             --title "자기개선 후보 #$ISSUE_NUMBER 구현" \
-            --body-file "$body_file"
+            --body-file "$body_file")"
+          pr_number="${pr_url##*/}"
+          # Events emitted with GITHUB_TOKEN do not start normal push/PR CI, so
+          # explicitly dispatch CI at the exact candidate ref before Review/Fix.
+          gh workflow run ci.yml --repo "$GH_REPO" --ref "$IMPLEMENTATION_BRANCH"
+          gh api --method POST "repos/$GH_REPO/dispatches" \
+            -f event_type=self-improvement-review \
+            -F "client_payload[pr_number]=$pr_number"
