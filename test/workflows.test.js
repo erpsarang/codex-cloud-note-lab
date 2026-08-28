@@ -33,11 +33,12 @@ test('fix attempts are reserved before push and keyed by both SHAs', async () =>
   assert.match(workflow, /\[\[ "\$attempt" =~ \^\[0-9\]\+\$ \]\]/);
 });
 
-test('structured reviews validate findings and cannot pass with P0 or P1', async () => {
+test('structured reviews validate findings and force hold for every P0 or P1', async () => {
   const workflow = await readWorkflow('review-fix-merge.yml');
   assert.match(workflow, /all\(\.findings\[\];[\s\S]*\.severity \| IN\("P0", "P1", "P2"\)/);
   assert.match(workflow, /\.line \| type == "number" and \. >= 1 and floor == \./);
-  assert.match(workflow, /\.result == "pass" and any\(\.findings\[\]; \.severity == "P0" or \.severity == "P1"\)/);
+  assert.match(workflow, /if any\(\.findings\[\]; \.severity == "P0" or \.severity == "P1"\)/);
+  assert.doesNotMatch(workflow, /\.result == "(?:pass|fix)" and any\(\.findings\[\]/);
   assert.match(workflow, /then \.result = "hold"/);
 });
 

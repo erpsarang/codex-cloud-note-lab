@@ -132,9 +132,9 @@ jobs:
               (.path | type == "string" and length > 0 and (contains("\n") | not)) and
               (.line | type == "number" and . >= 1 and floor == .) and
               (.message | type == "string" and length > 0))' review-result.json >/dev/null
-          # A pass with a blocking finding is internally inconsistent. Normalize it
-          # to hold so the terminal job records ON_HOLD rather than trusting it.
-          jq 'if .result == "pass" and any(.findings[]; .severity == "P0" or .severity == "P1")
+          # Blocking findings always require human review, regardless of whether
+          # the model supplied pass or fix as the top-level result.
+          jq 'if any(.findings[]; .severity == "P0" or .severity == "P1")
               then .result = "hold" else . end' review-result.json > review-result.validated.json
           mv review-result.validated.json review-result.json
           {
