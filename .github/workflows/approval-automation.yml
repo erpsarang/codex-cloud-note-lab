@@ -215,6 +215,30 @@ jobs:
             -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic_auth" \
             push --no-verify --set-upstream origin "$IMPLEMENTATION_BRANCH"
 
+      - name: Record trusted publication provenance
+        if: needs.implement.outputs.existing_branch != 'true'
+        id: publication-provenance
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          published_sha="$(git rev-parse HEAD)"
+          jq -n --arg sha "$published_sha" --argjson candidate "$ISSUE_NUMBER" \
+            '{head_sha: $sha, candidate: $candidate}' > "$RUNNER_TEMP/trusted-publication.json"
+          echo "sha=$published_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload trusted publication provenance
+        if: needs.implement.outputs.existing_branch != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          # GitHub binds this exact-SHA record to this approval-automation run.
+          # A contributor can edit a PR body or branch, but cannot attach an
+          # artifact to this trusted job's workflow run.
+          name: trusted-publication-${{ github.event.issue.number }}-${{ steps.publication-provenance.outputs.sha }}
+          path: ${{ runner.temp }}/trusted-publication.json
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Create implementation pull request
         env:
           # A GitHub App installation token or PAT is required here so the push

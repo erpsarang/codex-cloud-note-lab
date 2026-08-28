@@ -158,6 +158,29 @@ test('authorization accepts only the repository default base branch', async () =
   assert.match(workflow, /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
 });
 
+test('authorization requires exact-HEAD trusted publication provenance', async () => {
+  const approval = await readWorkflow('approval-automation.yml');
+  const review = await readWorkflow('review-fix-merge.yml');
+  assert.match(approval, /trusted-publication-\$\{\{ github\.event\.issue\.number \}\}-\$\{\{ steps\.publication-provenance\.outputs\.sha \}\}/);
+  assert.match(approval, /head_sha: \$sha, candidate: \$candidate/);
+  assert.match(approval, /retention-days: 90/);
+  assert.match(review, /provenance_name="trusted-publication-\$candidate-\$HEAD_SHA"/);
+  assert.match(review, /actions\/artifacts\?name=\$provenance_name/);
+  assert.match(review, /select\(\.expired == false\)/);
+  assert.match(review, /\.workflow_run\.id/);
+  assert.match(review, /actions\/runs\/\$run_id/);
+  assert.match(review, /\.path == "\.github\/workflows\/approval-automation\.yml"/);
+  assert.match(review, /\.event == "issues"/);
+  assert.match(review, /\.path == "\.github\/workflows\/review-fix-merge\.yml"/);
+  assert.match(review, /\.event == "pull_request_target"/);
+  assert.match(review, /\.repository\.full_name == \$repo/);
+  assert.match(review, /\.head_branch == \$default_branch/);
+  const fixProvenance = review.indexOf('- name: trusted fix publication provenance 업로드');
+  const fixPush = review.indexOf('- name: trusted job에서 수정 게시');
+  assert.ok(fixProvenance > 0 && fixProvenance < fixPush);
+  assert.match(review, /name: trusted-publication-\$\{\{ needs\.authorize\.outputs\.candidate \}\}-\$\{\{ steps\.commit\.outputs\.new_sha \}\}/);
+});
+
 test('fix-stage forbidden-path checks are rename-aware', async () => {
   const workflow = await readWorkflow('review-fix-merge.yml');
   const fix = workflow.slice(workflow.indexOf('\n  fix:'), workflow.indexOf('\n  publish-fix:'));

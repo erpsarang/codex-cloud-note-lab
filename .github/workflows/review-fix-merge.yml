@@ -10,6 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  actions: read
   contents: read
   issues: read
   pull-requests: read
@@ -55,6 +56,32 @@ jobs:
           [ "$BASE_BRANCH" = "$DEFAULT_BRANCH" ] || {
             echo "기본 branch를 대상으로 한 PR만 자동화할 수 있습니다."; exit 0;
           }
+
+          # The body marker, repository, and branch are only selectors. Authorization
+          # comes from an exact-SHA artifact attached by GitHub to the isolated
+          # trusted publication workflow run.
+          provenance_name="trusted-publication-$candidate-$HEAD_SHA"
+          provenance="$(gh api --paginate --slurp \
+            "repos/$GH_REPO/actions/artifacts?name=$provenance_name&per_page=100" |
+            jq -c '[.[].artifacts[] | select(.expired == false)] | sort_by(.created_at) | last // empty')"
+          [ -n "$provenance" ] || {
+            echo "현재 HEAD의 trusted publication provenance를 확인할 수 없습니다."; exit 0;
+          }
+          [ "$(jq -r '.name' <<<"$provenance")" = "$provenance_name" ] || exit 1
+          run_id="$(jq -r '.workflow_run.id // empty' <<<"$provenance")"
+          [[ "$run_id" =~ ^[0-9]+$ ]] || { echo "provenance workflow run ID가 올바르지 않습니다."; exit 0; }
+          publication_run="$(gh api "repos/$GH_REPO/actions/runs/$run_id")"
+          jq -e \
+            --arg repo "$GH_REPO" \
+            --arg default_branch "$DEFAULT_BRANCH" '
+              .repository.full_name == $repo and
+              ((.path == ".github/workflows/approval-automation.yml" and
+                .event == "issues" and .head_branch == $default_branch) or
+               (.path == ".github/workflows/review-fix-merge.yml" and
+                .event == "pull_request_target"))
+            ' <<<"$publication_run" >/dev/null || {
+              echo "HEAD artifact가 trusted publication workflow에서 생성되지 않았습니다."; exit 0;
+            }
 
           issue="$(gh api "repos/$GH_REPO/issues/$candidate")"
           printf '%s' "$issue" | jq -e '
@@ -395,6 +422,22 @@ jobs:
             gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body \
               "$marker ${ATTEMPT}/${MAX_FIX_ATTEMPTS}회 수정을 push 전에 예약했습니다."
           fi
+
+      - name: trusted fix publication provenance 생성
+        env:
+          CANDIDATE: ${{ needs.authorize.outputs.candidate }}
+          NEW_SHA: ${{ steps.commit.outputs.new_sha }}
+        run: |
+          jq -n --arg sha "$NEW_SHA" --argjson candidate "$CANDIDATE" \
+            '{head_sha: $sha, candidate: $candidate}' > "$RUNNER_TEMP/trusted-publication.json"
+
+      - name: trusted fix publication provenance 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: trusted-publication-${{ needs.authorize.outputs.candidate }}-${{ steps.commit.outputs.new_sha }}
+          path: ${{ runner.temp }}/trusted-publication.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: trusted job에서 수정 게시
         env:
