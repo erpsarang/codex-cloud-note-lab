@@ -40,6 +40,8 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           echo "authorized=false" >> "$GITHUB_OUTPUT"
@@ -48,6 +50,9 @@ jobs:
           [ "$HEAD_REPO" = "$GH_REPO" ] || { echo "fork PR은 자동화할 수 없습니다."; exit 0; }
           [ "$HEAD_BRANCH" = "codex/self-improvement-$candidate" ] || {
             echo "후보 번호에 대응하는 게시 branch가 아닙니다."; exit 0;
+          }
+          [ "$BASE_BRANCH" = "$DEFAULT_BRANCH" ] || {
+            echo "기본 branch를 대상으로 한 PR만 자동화할 수 있습니다."; exit 0;
           }
 
           issue="$(gh api "repos/$GH_REPO/issues/$candidate")"
@@ -216,6 +221,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       patch_created: ${{ steps.patch.outputs.created }}
+      patch_digest: ${{ steps.patch.outputs.digest }}
       next_attempt: ${{ steps.counter.outputs.next }}
     steps:
       - name: 정확한 PR HEAD 체크아웃
@@ -260,12 +266,35 @@ jobs:
           # Intentional package.json/package-lock.json edits already present are retained.
           git add --all
           [ -n "$(git diff --cached --name-only)" ] || { echo "수정 내용이 없습니다." >&2; exit 1; }
-          if git diff --cached --name-only | grep -Eq '^\.github/workflows/|(^|/)(secrets?|tokens?)(/|\.|$)|branch[-_ ]?protection|rulesets?|self[-_ ]?improvement.*(security|policy|boundary)'; then
+          forbidden='^\.github/workflows/|(^|/)(secrets?|tokens?)(/|\.|$)|branch[-_ ]?protection|rulesets?|self[-_ ]?improvement.*(security|policy|boundary)'
+          forbidden_path=false
+          while IFS= read -r -d '' status; do
+            IFS= read -r -d '' path
+            [[ "$path" =~ $forbidden ]] && forbidden_path=true
+            # With -z, rename/copy records contain both the source and destination.
+            if [[ "$status" == R* || "$status" == C* ]]; then
+              IFS= read -r -d '' destination
+              [[ "$destination" =~ $forbidden ]] && forbidden_path=true
+            fi
+          done < <(git diff --cached --name-status -z --find-renames)
+          if [ "$forbidden_path" = true ]; then
             echo "금지된 파일 변경이 발견되었습니다." >&2
             exit 1
           fi
           git diff --cached --binary --full-index > "$RUNNER_TEMP/fix.patch"
+          digest="$(sha256sum "$RUNNER_TEMP/fix.patch" | cut -d' ' -f1)"
           echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      # Preserve the reviewed snapshot outside the test runner's writable
+      # filesystem before any candidate-controlled lifecycle or test script runs.
+      - name: immutable 수정 patch 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: fix-${{ github.event.pull_request.number }}-${{ needs.authorize.outputs.head_sha }}
+          path: ${{ runner.temp }}/fix.patch
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Node.js 설정
         uses: actions/setup-node@v4
@@ -281,16 +310,9 @@ jobs:
           ATTEMPT: ${{ needs.authorize.outputs.attempt }}
         run: echo "next=$((ATTEMPT + 1))" >> "$GITHUB_OUTPUT"
 
-      - name: 수정 patch 업로드
-        uses: actions/upload-artifact@v4
-        with:
-          name: fix-${{ github.event.pull_request.number }}-${{ needs.authorize.outputs.head_sha }}
-          path: ${{ runner.temp }}/fix.patch
-          retention-days: 1
-
   publish-fix:
     needs: [authorize, fix]
-    if: needs.fix.outputs.patch_created == 'true'
+    if: needs.fix.result == 'success' && needs.fix.outputs.patch_created == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -310,6 +332,13 @@ jobs:
         with:
           name: fix-${{ github.event.pull_request.number }}-${{ needs.authorize.outputs.head_sha }}
           path: ${{ runner.temp }}/fix
+
+      - name: immutable patch digest 검증
+        env:
+          EXPECTED_PATCH_DIGEST: ${{ needs.fix.outputs.patch_digest }}
+        run: |
+          set -euo pipefail
+          echo "$EXPECTED_PATCH_DIGEST  $RUNNER_TEMP/fix/fix.patch" | sha256sum --check --strict
 
       - name: HEAD 재확인, 적용 및 commit
         id: commit

@@ -101,6 +101,37 @@ test('Codex changes are snapshotted before dependency installation', async () =>
   assert.match(workflow.slice(snapshot, install), /git diff --cached --binary --full-index/);
 });
 
+test('fix patch is uploaded before tests and digest-verified before publication', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const snapshot = workflow.indexOf('- name: Codex intended changes 확정 및 patch 패키징');
+  const upload = workflow.indexOf('- name: immutable 수정 patch 업로드', snapshot);
+  const install = workflow.indexOf('run: npm install && npm test', snapshot);
+  const verify = workflow.indexOf('- name: immutable patch digest 검증');
+  const apply = workflow.indexOf('git apply --index --binary', verify);
+  assert.ok(snapshot > 0 && upload > snapshot && install > upload);
+  assert.ok(verify > install && apply > verify);
+  assert.match(workflow, /digest="\$\(sha256sum "\$RUNNER_TEMP\/fix\.patch"/);
+  assert.match(workflow, /EXPECTED_PATCH_DIGEST[\s\S]*sha256sum --check --strict/);
+  assert.match(workflow, /if: needs\.fix\.result == 'success'/);
+});
+
+test('authorization accepts only the repository default base branch', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  assert.match(workflow, /DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}/);
+  assert.match(workflow, /\[ "\$BASE_BRANCH" = "\$DEFAULT_BRANCH" \]/);
+  assert.match(workflow, /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+});
+
+test('fix-stage forbidden-path checks are rename-aware', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const fix = workflow.slice(workflow.indexOf('\n  fix:'), workflow.indexOf('\n  publish-fix:'));
+  assert.match(fix, /git diff --cached --name-status -z --find-renames/);
+  assert.match(fix, /status" == R\*/);
+  assert.match(fix, /destination/);
+  assert.doesNotMatch(fix, /git diff --cached --name-only \| grep -Eq/);
+  assert.match(fix, /\^\\\.github\/workflows\//);
+});
+
 test('authorization and merge bind to repository branch and required contexts', async () => {
   const workflow = await readWorkflow('review-fix-merge.yml');
   assert.match(workflow, /HEAD_REPO.*github\.event\.pull_request\.head\.repo\.full_name/);
