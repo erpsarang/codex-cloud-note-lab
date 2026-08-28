@@ -1,0 +1,142 @@
+name: Trusted Merge
+
+on:
+  workflow_run:
+    workflows: [Self-Improvement Review]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: trusted-merge-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: self-improvement-trusted-merge
+    steps:
+      # No checkout, package installation, repository script, or AI action is
+      # permitted in this workflow. The artifact is bound to the completed run.
+      - name: Download MERGE_READY from the completed review run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: merge-ready-*
+          path: ${{ runner.temp }}/ready
+          merge-multiple: true
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate trusted state and merge exact head
+        env:
+          GH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_MERGE_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CONTRACT: ${{ runner.temp }}/ready/merge-ready.json
+        run: |
+          set -euo pipefail
+          test -f "$CONTRACT"
+          jq -e '.version == 2 and .finalReview == "PASS" and
+            .finalReviewSha == .headSha and .testResult == "PASS" and
+            .testedBaseSha == .baseSha and .testedHeadSha == .headSha and
+            (.testedResultTree | test("^[0-9a-f]{40}$")) and (.ciRunId > 0) and
+            .ciContext == "test" and .ciResult == "success" and
+            (.publicationRunId > 0) and (.publicationRunAttempt > 0) and
+            (has("reviewFixAttempts") | not)' "$CONTRACT" >/dev/null
+
+          candidate="$(jq -r .candidate "$CONTRACT")"
+          pr_number="$(jq -r .pullRequest "$CONTRACT")"
+          expected_head="$(jq -r .headSha "$CONTRACT")"
+          expected_base="$(jq -r .baseSha "$CONTRACT")"
+          expected_tree="$(jq -r .testedResultTree "$CONTRACT")"
+          ci_run_id="$(jq -r .ciRunId "$CONTRACT")"
+          expected_fingerprint="$(jq -r .requirementsFingerprint "$CONTRACT")"
+          publication_run_id="$(jq -r .publicationRunId "$CONTRACT")"
+          publication_run_attempt="$(jq -r .publicationRunAttempt "$CONTRACT")"
+
+          # Independently re-read the immutable Approval Automation artifact;
+          # mutable PR names, titles, branches, and bodies grant no authority.
+          publication_run="$(gh api "repos/$GH_REPO/actions/runs/$publication_run_id")"
+          jq -e --arg workflow ".github/workflows/approval-automation.yml" \
+            --argjson attempt "$publication_run_attempt" \
+            '.event == "issues" and .conclusion == "success" and .run_attempt == $attempt and
+             .path == $workflow' <<<"$publication_run" >/dev/null
+          publication_artifact="$(gh api "repos/$GH_REPO/actions/runs/$publication_run_id/artifacts" \
+            --jq '.artifacts[] | select(.name == "candidate-publication-'"$publication_run_id-$publication_run_attempt"'") | .id')"
+          test "$(wc -l <<<"$publication_artifact")" -eq 1
+          gh api "repos/$GH_REPO/actions/artifacts/$publication_artifact/zip" > "$RUNNER_TEMP/publication.zip"
+          unzip -p "$RUNNER_TEMP/publication.zip" publication-provenance.json > "$RUNNER_TEMP/publication.json"
+          jq -e --argjson candidate "$candidate" --argjson pr "$pr_number" \
+            --arg head "$expected_head" --arg fingerprint "$expected_fingerprint" \
+            --argjson run "$publication_run_id" --argjson attempt "$publication_run_attempt" \
+            '.candidate==$candidate and .pullRequest==$pr and .publishedHeadSha==$head and
+             .requirementsFingerprint==$fingerprint and .publicationRunId==$run and
+             .publicationRunAttempt==$attempt' "$RUNNER_TEMP/publication.json" >/dev/null
+          jq -e --arg sha "$(jq -r .publicationSourceSha "$RUNNER_TEMP/publication.json")" \
+            --arg ref "$(jq -r .publicationSourceBranch "$RUNNER_TEMP/publication.json")" \
+            '.head_sha == $sha and .head_branch == $ref' <<<"$publication_run" >/dev/null
+
+          issue="$(gh api "repos/$GH_REPO/issues/$candidate")"
+          jq -e '.state == "open" and ([.labels[].name] | index("approved") != null)' <<<"$issue" >/dev/null
+          actual_fingerprint="$(jq -r .body <<<"$issue" | sha256sum | cut -d' ' -f1)"
+          [ "$actual_fingerprint" = "$expected_fingerprint" ]
+
+          # This early comparison gives a clear failure before preparing the merge.
+          # The compare-and-swap push below repeats it atomically with publication.
+          current_base="$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)"
+          [ "$current_base" = "$expected_base" ]
+
+          pr="$(gh api "repos/$GH_REPO/pulls/$pr_number")"
+          jq -e --arg head "$expected_head" --arg base "$expected_base" --arg branch "$DEFAULT_BRANCH" \
+            '.state == "open" and .draft == false and .head.sha == $head and
+             .base.sha == $base and .base.ref == $branch and .mergeable == true' <<<"$pr" >/dev/null
+
+          gh api "repos/$GH_REPO/actions/runs/$ci_run_id" \
+            --jq '[.name, .event, .conclusion, .head_sha] | @tsv' |
+            grep -Fx $'CI\tworkflow_dispatch\tsuccess\t'"$expected_base"
+
+          gh api "repos/$GH_REPO/pulls/$pr_number/files?per_page=100" --paginate \
+            --jq '.[] | .filename, (.previous_filename // empty)' |
+            if grep -Eq '^\.github/(workflows|actions)/'; then exit 1; fi
+
+          # Build a commit with the exact tested result tree, then update the default
+          # branch with a server-side compare-and-swap. Unlike the pull merge API's
+          # head-only `sha` guard, force-with-lease rejects the push atomically if
+          # expected_base is no longer the branch tip. No worktree is created and no
+          # candidate code, hook, package, or test is executed in Trusted Merge.
+          git init "$RUNNER_TEMP/atomic-merge"
+          cd "$RUNNER_TEMP/atomic-merge"
+          git config core.hooksPath /dev/null
+          git remote add origin "https://github.com/$GH_REPO.git"
+          gh auth setup-git
+          git fetch --no-tags origin "$expected_base" "$expected_head"
+          actual_tree="$(git merge-tree --write-tree "$expected_base" "$expected_head")"
+          [ "$actual_tree" = "$expected_tree" ]
+          merge_commit="$(printf 'Self-Improvement candidate #%s (PR #%s)\n' "$candidate" "$pr_number" |
+            git -c user.name='Self-Improvement Trusted Merge' \
+                -c user.email='self-improvement@users.noreply.github.com' \
+                commit-tree "$expected_tree" -p "$expected_base" -p "$expected_head")"
+          git push origin "$merge_commit:refs/heads/$DEFAULT_BRANCH" \
+            --force-with-lease="refs/heads/$DEFAULT_BRANCH:$expected_base"
+
+          # GitHub should recognize the head as merged after the atomic ref update.
+          gh api "repos/$GH_REPO/pulls/$pr_number" --jq .merged | grep -Fx true
+
+      - name: Put a changed or unverifiable candidate ON_HOLD
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CONTRACT: ${{ runner.temp }}/ready/merge-ready.json
+        run: |
+          set -euo pipefail
+          test -f "$CONTRACT" || exit 0
+          candidate="$(jq -r '.candidate // empty' "$CONTRACT")"
+          test -n "$candidate" || exit 0
+          gh issue edit "$candidate" --repo "$GH_REPO" --add-label ON_HOLD

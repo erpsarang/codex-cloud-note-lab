@@ -5,9 +5,10 @@ on:
     types: [labeled]
 
 permissions:
-  contents: read
+  actions: write
+  contents: write
   issues: read
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: approval-automation-${{ github.event.issue.number }}
@@ -83,8 +84,8 @@ jobs:
                 '[.[] | select(.ref == $ref)] | length'
           )"
           if [ "$branch_count" -eq 1 ]; then
-            echo "Remote branch $IMPLEMENTATION_BRANCH already exists; its missing pull request will be recovered"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "기존 구현 branch의 publication provenance를 검증할 수 없어 중단합니다" >&2
+            exit 1
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -203,10 +204,10 @@ jobs:
           git -c core.hooksPath=/dev/null commit \
             -m "자기개선 후보 #$ISSUE_NUMBER 구현"
 
-      - name: Push implementation
+      - name: Push implementation with the workflow-scoped token
         if: needs.implement.outputs.existing_branch != 'true'
         env:
-          PUBLISH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
+          PUBLISH_TOKEN: ${{ github.token }}
         run: |
           # The write credential exists only for this trusted command on the clean
           # runner. --no-verify and the disabled hook path are defense in depth.
@@ -216,10 +217,11 @@ jobs:
             push --no-verify --set-upstream origin "$IMPLEMENTATION_BRANCH"
 
       - name: Create implementation pull request
+        id: publication
         env:
-          # A GitHub App installation token or PAT is required here so the push
-          # and pull_request events start the repository's normal CI workflows.
-          GH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
+          # This workflow-scoped token can publish the candidate but is not the
+          # protected merge credential used by Trusted Merge.
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -233,12 +235,47 @@ jobs:
 
           Closes #$ISSUE_NUMBER
 
-          이 pull request는 자동으로 생성되었습니다. 반드시 사람이 검토하고 merge해야 합니다.
+          <!-- self-improvement-candidate:$ISSUE_NUMBER -->
+          이 pull request는 자동으로 생성되었습니다. Review-only workflow는 검증된
+          MERGE_READY artifact만 만들며 실제 merge는 별도의 Trusted Merge workflow가 수행합니다.
           EOF
 
-          gh pr create \
+          pr_url="$(gh pr create \
             --repo "$GH_REPO" \
             --base "$DEFAULT_BRANCH" \
             --head "$IMPLEMENTATION_BRANCH" \
             --title "자기개선 후보 #$ISSUE_NUMBER 구현" \
-            --body-file "$body_file"
+            --body-file "$body_file")"
+          pr_number="${pr_url##*/}"
+          published_head="$(gh api "repos/$GH_REPO/pulls/$pr_number" --jq .head.sha)"
+          requirements_fingerprint="$(gh api "repos/$GH_REPO/issues/$ISSUE_NUMBER" --jq .body | sha256sum | cut -d' ' -f1)"
+          jq -n -S --argjson candidate "$ISSUE_NUMBER" --arg fingerprint "$requirements_fingerprint" \
+            --arg head "$published_head" --arg workflow "$GITHUB_WORKFLOW_REF" \
+            --arg sourceSha "$GITHUB_SHA" --arg sourceBranch "$GITHUB_REF_NAME" \
+            --argjson runId "$GITHUB_RUN_ID" --argjson runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson pr "$pr_number" \
+            '{version:1,candidate:$candidate,requirementsFingerprint:$fingerprint,
+              publishedHeadSha:$head,publicationWorkflow:$workflow,
+              publicationSourceSha:$sourceSha,publicationSourceBranch:$sourceBranch,
+              publicationRunId:$runId,publicationRunAttempt:$runAttempt,pullRequest:$pr}' \
+            > "$RUNNER_TEMP/publication-provenance.json"
+          printf 'pr_number=%s\n' "$pr_number" >> "$GITHUB_OUTPUT"
+          # Events emitted with GITHUB_TOKEN do not start the review-only flow.
+      - name: Upload immutable publication provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/publication-provenance.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Dispatch review for the trusted publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh api --method POST "repos/$GH_REPO/dispatches" \
+            -f event_type=self-improvement-review \
+            -F "client_payload[pr_number]=${{ steps.publication.outputs.pr_number }}" \
+            -F "client_payload[publication_run_id]=$GITHUB_RUN_ID" \
+            -F "client_payload[publication_run_attempt]=$GITHUB_RUN_ATTEMPT"
