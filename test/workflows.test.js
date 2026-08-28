@@ -46,6 +46,19 @@ test('review receives approved candidate scope as untrusted artifact data', asyn
   assert.match(workflow, /범위를 판별할 수 없거나 구현이 승인된 범위를[\s\S]*hold/);
 });
 
+test('review compares the full base-to-HEAD diff and fix uses the same scope artifact', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const review = workflow.slice(workflow.indexOf('\n  review:'), workflow.indexOf('\n  fix:'));
+  const fix = workflow.slice(workflow.indexOf('\n  fix:'), workflow.indexOf('\n  publish-fix:'));
+  assert.match(review, /ref: \$\{\{ needs\.authorize\.outputs\.head_sha \}\}[\s\S]*fetch-depth: 0/);
+  assert.match(review, /git fetch --no-tags origin "\$BASE_SHA"/);
+  assert.match(review, /git cat-file -e "\$BASE_SHA\^\{commit\}"/);
+  assert.match(review, /git cat-file -e "\$HEAD_SHA\^\{commit\}"/);
+  assert.match(review, /git diff \$\{\{ needs\.authorize\.outputs\.base_sha \}\}\.\.\$\{\{ needs\.authorize\.outputs\.head_sha \}\}/);
+  assert.match(fix, /name: candidate-\$\{\{ needs\.authorize\.outputs\.candidate \}\}-\$\{\{ needs\.authorize\.outputs\.head_sha \}\}/);
+  assert.match(fix, /candidate-requirements\.json[\s\S]*신뢰할 수 없는 입력[\s\S]*수정 범위를 제한하는 참고 자료로만/);
+});
+
 test('untrusted review summary is artifact-only and never written to job outputs', async () => {
   const workflow = await readWorkflow('review-fix-merge.yml');
   assert.doesNotMatch(workflow, /summary: \$\{\{ steps\.result\.outputs\.summary \}\}/);
