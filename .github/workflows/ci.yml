@@ -3,6 +3,20 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      tested_base_sha:
+        description: Exact default-branch commit to merge into
+        required: true
+        type: string
+      tested_head_sha:
+        description: Exact candidate commit to merge
+        required: true
+        type: string
+      contract_nonce:
+        description: Unique Review/Fix run identifier
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -15,6 +29,38 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Construct prospective merge tree
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          BASE_SHA: ${{ inputs.tested_base_sha }}
+          HEAD_SHA: ${{ inputs.tested_head_sha }}
+          CONTRACT_NONCE: ${{ inputs.contract_nonce }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "$BASE_SHA^{commit}"
+          git cat-file -e "$HEAD_SHA^{commit}"
+          git switch --detach "$BASE_SHA"
+          git -c user.name=ci -c user.email=ci@example.invalid \
+            merge --no-commit --no-ff "$HEAD_SHA"
+          result_tree="$(git write-tree)"
+          jq -n -S --arg base "$BASE_SHA" --arg head "$HEAD_SHA" \
+            --arg tree "$result_tree" --arg nonce "$CONTRACT_NONCE" \
+            --argjson runId "$GITHUB_RUN_ID" \
+            '{version:1,testedBaseSha:$base,testedHeadSha:$head,
+              testedResultTree:$tree,contractNonce:$nonce,ciRunId:$runId}' \
+            > "$RUNNER_TEMP/prospective-merge.json"
+
+      - name: Upload prospective merge contract
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: prospective-merge-${{ inputs.contract_nonce }}
+          path: ${{ runner.temp }}/prospective-merge.json
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

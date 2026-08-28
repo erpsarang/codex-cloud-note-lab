@@ -82,6 +82,23 @@ jobs:
               case "$path" in .github/workflows/*|.github/actions/*) exit 1;; esac
             done
 
+      - name: Dispatch CI for the prospective merge
+        id: merge_test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BASE_SHA: ${{ steps.pr.outputs.base }}
+          HEAD_SHA: ${{ steps.pr.outputs.head }}
+          BASE_BRANCH: ${{ steps.pr.outputs.base_branch }}
+        run: |
+          set -euo pipefail
+          result_tree="$(git merge-tree --write-tree "$BASE_SHA" "$HEAD_SHA")"
+          nonce="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'result_tree=%s\nnonce=%s\n' "$result_tree" "$nonce" >>"$GITHUB_OUTPUT"
+          gh workflow run ci.yml --repo "$GH_REPO" --ref "$BASE_BRANCH" \
+            -f tested_base_sha="$BASE_SHA" -f tested_head_sha="$HEAD_SHA" \
+            -f contract_nonce="$nonce"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -136,7 +153,6 @@ jobs:
           git -c core.hooksPath=/dev/null \
             -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" \
             push --no-verify origin "HEAD:${{ steps.pr.outputs.head_ref }}"
-          gh workflow run ci.yml --repo "$GH_REPO" --ref "${{ steps.pr.outputs.head_ref }}"
           gh api --method POST "repos/$GH_REPO/dispatches" \
             -f event_type=self-improvement-review -F "client_payload[pr_number]=$PR_NUMBER"
 
@@ -146,17 +162,38 @@ jobs:
           grep -Fx 'VERDICT: PASS' final-review.md
 
       - name: Wait for the required CI result
+        id: ci
         if: steps.fixes.outputs.changed == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          BASE_SHA: ${{ steps.pr.outputs.base }}
           HEAD_SHA: ${{ steps.pr.outputs.head }}
+          RESULT_TREE: ${{ steps.merge_test.outputs.result_tree }}
+          CONTRACT_NONCE: ${{ steps.merge_test.outputs.nonce }}
         run: |
           set -euo pipefail
           for attempt in $(seq 1 30); do
-            conclusion="$(gh api "repos/$GH_REPO/commits/$HEAD_SHA/check-runs" \
-              --jq '[.check_runs[] | select(.name == "test")][0].conclusion // ""')"
-            [ "$conclusion" = success ] && exit 0
+            artifact="$(gh api "repos/$GH_REPO/actions/artifacts?name=prospective-merge-$CONTRACT_NONCE" \
+              --jq '.artifacts | sort_by(.created_at) | last // empty')"
+            if [ -n "$artifact" ]; then
+              run_id="$(jq -r '.workflow_run.id' <<<"$artifact")"
+              conclusion="$(gh api "repos/$GH_REPO/actions/runs/$run_id" --jq '.conclusion // ""')"
+              if [ "$conclusion" = success ]; then
+                artifact_id="$(jq -r .id <<<"$artifact")"
+                gh api "repos/$GH_REPO/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/ci.zip"
+                unzip -p "$RUNNER_TEMP/ci.zip" prospective-merge.json > "$RUNNER_TEMP/ci-contract.json"
+                jq -e --arg base "$BASE_SHA" --arg head "$HEAD_SHA" \
+                  --arg tree "$RESULT_TREE" --arg nonce "$CONTRACT_NONCE" --argjson runId "$run_id" \
+                  '.version == 1 and .testedBaseSha == $base and
+                   .testedHeadSha == $head and .testedResultTree == $tree and
+                   .contractNonce == $nonce and .ciRunId == $runId' \
+                  "$RUNNER_TEMP/ci-contract.json" >/dev/null
+                printf 'run_id=%s\n' "$run_id" >>"$GITHUB_OUTPUT"
+                exit 0
+              fi
+              [ "$conclusion" != failure ] && [ "$conclusion" != cancelled ] || exit 1
+            fi
             sleep 10
           done
           exit 1
@@ -169,14 +206,18 @@ jobs:
           HEAD_SHA: ${{ steps.pr.outputs.head }}
           BASE_BRANCH: ${{ steps.pr.outputs.base_branch }}
           BASE_SHA: ${{ steps.pr.outputs.base }}
+          RESULT_TREE: ${{ steps.merge_test.outputs.result_tree }}
+          CI_RUN_ID: ${{ steps.ci.outputs.run_id }}
         run: |
           attempts="$(git log --format=%s "$BASE_SHA..$HEAD_SHA" | grep -c '^Automated P2 fix attempt ' || true)"
           jq -n -S \
             --argjson candidate "$CANDIDATE" --arg fingerprint "$FINGERPRINT" \
             --argjson pr "$PR_NUMBER" --arg head "$HEAD_SHA" \
-            --arg baseBranch "$BASE_BRANCH" --arg base "$BASE_SHA" --argjson attempts "$attempts" \
+            --arg baseBranch "$BASE_BRANCH" --arg base "$BASE_SHA" \
+            --arg resultTree "$RESULT_TREE" --argjson ciRunId "$CI_RUN_ID" --argjson attempts "$attempts" \
             '{version:1,candidate:$candidate,requirementsFingerprint:$fingerprint,
               pullRequest:$pr,headSha:$head,baseBranch:$baseBranch,baseSha:$base,
+              testedBaseSha:$base,testedHeadSha:$head,testedResultTree:$resultTree,ciRunId:$ciRunId,
               finalReview:"PASS",finalReviewSha:$head,testResult:"PASS",
               ciContext:"test",ciResult:"success",reviewFixAttempts:$attempts}' > merge-ready.json
 
