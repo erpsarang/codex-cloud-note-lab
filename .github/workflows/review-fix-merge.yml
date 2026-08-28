@@ -1,0 +1,312 @@
+name: Self-Improvement Review Fix Merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+# A candidate/PR can have only one active loop. A new HEAD supersedes an old run.
+concurrency:
+  group: self-improvement-review-fix-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+env:
+  MAX_FIX_ATTEMPTS: '3'
+
+jobs:
+  authorize:
+    if: startsWith(github.event.pull_request.head.ref, 'codex/self-improvement-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      authorized: ${{ steps.gate.outputs.authorized }}
+      candidate: ${{ steps.gate.outputs.candidate }}
+      head_sha: ${{ steps.gate.outputs.head_sha }}
+      attempt: ${{ steps.gate.outputs.attempt }}
+    steps:
+      - name: 승인 및 자동 생성 출처 확인
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          echo "authorized=false" >> "$GITHUB_OUTPUT"
+          candidate="$(printf '%s' "$PR_BODY" | sed -n 's/.*<!-- self-improvement-candidate:\([0-9][0-9]*\) -->.*/\1/p' | head -1)"
+          [ -n "$candidate" ] || { echo "자동 생성 표식을 찾지 못했습니다."; exit 0; }
+
+          issue="$(gh api "repos/$GH_REPO/issues/$candidate")"
+          printf '%s' "$issue" | jq -e '
+            (.pull_request == null) and
+            (.state == "open") and
+            any(.labels[]?; .name == "approved") and
+            ((.body // "") | contains("<!-- self-improvement-trigger-pr:"))
+          ' >/dev/null || { echo "후보가 열려 있지 않거나 approved 승인이 없습니다."; exit 0; }
+
+          # Comment markers make retries idempotent and provide the persisted loop count.
+          attempt="$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" \
+            --jq '[.[] | (.body // "") | capture("<!-- self-improvement-fix:(?<n>[0-9]+):[0-9a-f]+ -->")? | .n // empty | tonumber] | max // 0')"
+          echo "authorized=true" >> "$GITHUB_OUTPUT"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "attempt=$attempt" >> "$GITHUB_OUTPUT"
+
+  policy:
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      allowed: ${{ steps.files.outputs.allowed }}
+    steps:
+      - name: 변경 금지 영역 검사
+        id: files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          files="$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" --jq '.[].filename')"
+          if printf '%s\n' "$files" | grep -Eq '^\.github/workflows/|(^|/)(secrets?|tokens?)(/|\.|$)|branch[-_ ]?protection|rulesets?|self[-_ ]?improvement.*(security|policy|boundary)'; then
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  review:
+    needs: [authorize, policy]
+    if: needs.policy.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      result: ${{ steps.result.outputs.result }}
+      summary: ${{ steps.result.outputs.summary }}
+      reviewed_sha: ${{ needs.authorize.outputs.head_sha }}
+    steps:
+      - name: 정확한 PR HEAD 체크아웃
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.authorize.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: 최신 HEAD 자동 코드 리뷰
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          sandbox: read-only
+          output-file: review-result.json
+          prompt: |
+            승인된 자기개선 후보 #${{ needs.authorize.outputs.candidate }}가 만든 PR
+            #${{ github.event.pull_request.number }}의 정확한 commit
+            ${{ needs.authorize.outputs.head_sha }}를 검토하세요. 저장소를 수정하지 마세요.
+            정확히 하나의 JSON object만 review-result.json에 작성하세요.
+            스키마: {"result":"pass|fix|hold","summary":"한국어 설명","findings":[{"severity":"P0|P1|P2","path":"경로","line":1,"message":"한국어 지적"}]}
+            blocking 문제가 없으면 pass, 범위 안에서 안전하게 고칠 P2 문제면 fix,
+            P0/P1·보안 경계·요구 범위 밖 변경·판단 불가이면 hold로 분류하세요.
+
+      - name: 리뷰 결과 검증
+        id: result
+        run: |
+          set -euo pipefail
+          jq -e 'type == "object" and (.result | IN("pass", "fix", "hold")) and
+            (.summary | type == "string") and (.findings | type == "array")' review-result.json >/dev/null
+          {
+            echo "result=$(jq -r .result review-result.json)"
+            echo 'summary<<REVIEW_EOF'
+            jq -r .summary review-result.json
+            echo 'REVIEW_EOF'
+          } >> "$GITHUB_OUTPUT"
+          cp review-result.json "$RUNNER_TEMP/review-result.json"
+
+      - name: 구조화된 리뷰 결과 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-${{ github.event.pull_request.number }}-${{ needs.authorize.outputs.head_sha }}
+          path: ${{ runner.temp }}/review-result.json
+          retention-days: 7
+
+  fix:
+    needs: [authorize, policy, review]
+    if: needs.review.outputs.result == 'fix' && fromJSON(needs.authorize.outputs.attempt) < 3
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      patch_created: ${{ steps.patch.outputs.created }}
+      next_attempt: ${{ steps.counter.outputs.next }}
+    steps:
+      - name: 정확한 PR HEAD 체크아웃
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.authorize.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: 리뷰 결과 다운로드
+        uses: actions/download-artifact@v4
+        with:
+          name: review-${{ github.event.pull_request.number }}-${{ needs.authorize.outputs.head_sha }}
+          path: ${{ runner.temp }}/review
+
+      - name: 원 후보 범위와 리뷰 지적에 한정해 수정
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ':workspace'
+          prompt: |
+            PR #${{ github.event.pull_request.number }}의 HEAD ${{ needs.authorize.outputs.head_sha }}를
+            수정하세요. 원래 범위는 승인된 Candidate #${{ needs.authorize.outputs.candidate }}입니다.
+            ${{ runner.temp }}/review/review-result.json의 구조화된 리뷰 지적만 해결하고 기존 구현
+            의도를 유지하세요. 불필요한 변경, workflow·권한·secret·token·branch protection·
+            ruleset·Self-Improvement 보안 경계 변경은 금지합니다. 필요한 테스트를 추가하고
+            npm test가 통과하게 하세요. commit, push, PR 생성, merge는 하지 마세요.
+
+      - name: Node.js 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 수정 후 테스트
+        run: npm install && npm test
+
+      - name: 수정 patch 검증 및 패키징
+        id: patch
+        run: |
+          set -euo pipefail
+          git add --all
+          [ -n "$(git diff --cached --name-only)" ] || { echo "수정 내용이 없습니다." >&2; exit 1; }
+          if git diff --cached --name-only | grep -Eq '^\.github/workflows/|(^|/)(secrets?|tokens?)(/|\.|$)|branch[-_ ]?protection|rulesets?|self[-_ ]?improvement.*(security|policy|boundary)'; then
+            echo "금지된 파일 변경이 발견되었습니다." >&2
+            exit 1
+          fi
+          git diff --cached --binary --full-index > "$RUNNER_TEMP/fix.patch"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+      - name: 반복 횟수 계산
+        id: counter
+        env:
+          ATTEMPT: ${{ needs.authorize.outputs.attempt }}
+        run: echo "next=$((ATTEMPT + 1))" >> "$GITHUB_OUTPUT"
+
+      - name: 수정 patch 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: fix-${{ github.event.pull_request.number }}-${{ needs.authorize.outputs.head_sha }}
+          path: ${{ runner.temp }}/fix.patch
+          retention-days: 1
+
+  publish-fix:
+    needs: [authorize, fix]
+    if: needs.fix.outputs.patch_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 수정 기준 HEAD를 clean runner에 체크아웃
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.authorize.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 수정 patch 다운로드
+        uses: actions/download-artifact@v4
+        with:
+          name: fix-${{ github.event.pull_request.number }}-${{ needs.authorize.outputs.head_sha }}
+          path: ${{ runner.temp }}/fix
+
+      - name: HEAD 재확인, 적용 및 commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_SHA: ${{ needs.authorize.outputs.head_sha }}
+          ATTEMPT: ${{ needs.fix.outputs.next_attempt }}
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .head.sha)"
+          [ "$current" = "$EXPECTED_SHA" ] || { echo "PR HEAD가 변경되어 수정을 중단합니다." >&2; exit 1; }
+          git switch --detach "$EXPECTED_SHA"
+          git apply --index --binary "$RUNNER_TEMP/fix/fix.patch"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -c core.hooksPath=/dev/null commit -m "자기개선 리뷰 수정 ${ATTEMPT}/$MAX_FIX_ATTEMPTS"
+
+      - name: trusted job에서 수정 게시
+        env:
+          PUBLISH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          basic_auth="$(printf 'x-access-token:%s' "$PUBLISH_TOKEN" | base64 | tr -d '\n')"
+          git -c core.hooksPath=/dev/null \
+            -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic_auth" \
+            push --no-verify origin "HEAD:$HEAD_BRANCH"
+
+      - name: 재실행 방지 표식과 진행 상태 기록
+        env:
+          GH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          OLD_SHA: ${{ needs.authorize.outputs.head_sha }}
+          ATTEMPT: ${{ needs.fix.outputs.next_attempt }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body \
+            "<!-- self-improvement-fix:${ATTEMPT}:${OLD_SHA} -->자동 리뷰 지적에 따라 ${ATTEMPT}/${MAX_FIX_ATTEMPTS}회 수정을 게시했습니다. 최신 HEAD에서 자동 재Review를 시작합니다."
+
+  finish:
+    needs: [authorize, policy, review]
+    if: always() && needs.authorize.outputs.authorized == 'true' && needs.policy.outputs.allowed == 'true' && needs.review.outputs.result == 'pass'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: exact HEAD, CI, 충돌 및 승인 재검증 후 merge
+        env:
+          GH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CANDIDATE: ${{ needs.authorize.outputs.candidate }}
+          REVIEWED_SHA: ${{ needs.review.outputs.reviewed_sha }}
+        run: |
+          set -euo pipefail
+          for wait_count in $(seq 1 30); do
+            pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
+            current="$(jq -r .head.sha <<<"$pr")"
+            [ "$current" = "$REVIEWED_SHA" ] || { echo "리뷰 이후 HEAD가 변경되어 merge하지 않습니다." >&2; exit 1; }
+            [ "$(jq -r .mergeable <<<"$pr")" != "false" ] || { echo "merge conflict가 있어 중단합니다." >&2; exit 1; }
+            checks="$(gh api "repos/$GH_REPO/commits/$current/check-runs" --jq '[.check_runs[] | select(.name != "exact HEAD, CI, 충돌 및 승인 재검증 후 merge")]')"
+            pending="$(jq '[.[] | select(.status != "completed")] | length' <<<"$checks")"
+            failed="$(jq '[.[] | select(.status == "completed" and (.conclusion | IN("success", "neutral", "skipped") | not))] | length' <<<"$checks")"
+            [ "$failed" -eq 0 ] || { echo "Required CI check 실패로 중단합니다." >&2; exit 1; }
+            [ "$pending" -eq 0 ] && [ "$(jq length <<<"$checks")" -gt 0 ] && break
+            sleep 20
+          done
+          [ "$pending" -eq 0 ] || { echo "CI 결과 대기 시간이 초과되었습니다." >&2; exit 1; }
+          gh api "repos/$GH_REPO/issues/$CANDIDATE" --jq '.state == "open" and any(.labels[]?; .name == "approved")' | grep -qx true
+          gh pr merge "$PR_NUMBER" --repo "$GH_REPO" --squash --match-head-commit "$REVIEWED_SHA"
+          gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body "모든 안전 조건과 최신 HEAD 리뷰 및 CI를 통과하여 자동 merge를 완료했습니다."
+
+  on-hold:
+    needs: [authorize, policy, review]
+    if: always() && needs.authorize.outputs.authorized == 'true' && (needs.policy.outputs.allowed == 'false' || needs.policy.result == 'failure' || needs.review.outputs.result == 'hold' || (needs.review.outputs.result == 'fix' && fromJSON(needs.authorize.outputs.attempt) >= 3) || needs.review.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 사람이 읽을 수 있는 중단 상태 기록
+        env:
+          GH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          POLICY: ${{ needs.policy.outputs.allowed }}
+          RESULT: ${{ needs.review.outputs.result }}
+          ATTEMPT: ${{ needs.authorize.outputs.attempt }}
+        run: |
+          reason="Review 결과 미확정 또는 심각한 문제가 발견되었습니다."
+          [ "$POLICY" != false ] || reason="금지된 파일 변경 또는 자동화 정책 위반이 발견되었습니다."
+          [ "$ATTEMPT" -lt "$MAX_FIX_ATTEMPTS" ] || reason="Review-Fix 최대 반복 횟수를 초과했습니다."
+          gh pr edit "$PR_NUMBER" --repo "$GH_REPO" --add-label needs-human-review
+          gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body "**ON_HOLD** — $reason 자동 merge하지 않으며 사람의 확인이 필요합니다."

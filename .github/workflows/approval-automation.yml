@@ -233,7 +233,9 @@ jobs:
 
           Closes #$ISSUE_NUMBER
 
-          이 pull request는 자동으로 생성되었습니다. 반드시 사람이 검토하고 merge해야 합니다.
+          <!-- self-improvement-candidate:$ISSUE_NUMBER -->
+          이 pull request는 승인된 자기개선 후보에서 자동으로 생성되었습니다.
+          자동 Review-Fix-Review 정책과 모든 안전 조건을 통과한 경우에만 merge됩니다.
           EOF
 
           gh pr create \
