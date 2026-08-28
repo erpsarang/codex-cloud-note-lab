@@ -26,6 +26,7 @@ jobs:
       candidate: ${{ steps.gate.outputs.candidate }}
       head_sha: ${{ steps.gate.outputs.head_sha }}
       attempt: ${{ steps.gate.outputs.attempt }}
+      candidate_fingerprint: ${{ steps.gate.outputs.candidate_fingerprint }}
     steps:
       - name: 승인 및 자동 생성 출처 확인
         id: gate
@@ -60,6 +61,10 @@ jobs:
           jq -e --arg candidate "$candidate" '
             {candidate: ($candidate | tonumber), title: .title, body: (.body // "")}
           ' <<<"$issue" > "$RUNNER_TEMP/candidate-requirements.json"
+          # Bind the review authorization to the exact approved requirements.
+          # jq -c provides a deterministic title/body representation and the hash
+          # is a safe, single-line job output.
+          candidate_fingerprint="$(jq -c '{title, body: (.body // "")}' <<<"$issue" | sha256sum | cut -d' ' -f1)"
 
           # A trusted publication reservation is written before every push. Counting
           # reservations (including a push that failed) makes the limit fail closed.
@@ -72,6 +77,7 @@ jobs:
           echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           echo "attempt=$attempt" >> "$GITHUB_OUTPUT"
+          echo "candidate_fingerprint=$candidate_fingerprint" >> "$GITHUB_OUTPUT"
 
       - name: 승인된 Candidate 요구사항 업로드
         if: steps.gate.outputs.authorized == 'true'
@@ -349,8 +355,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           CANDIDATE: ${{ needs.authorize.outputs.candidate }}
+          REVIEWED_CANDIDATE_FINGERPRINT: ${{ needs.authorize.outputs.candidate_fingerprint }}
           REVIEWED_SHA: ${{ needs.review.outputs.reviewed_sha }}
           BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          EXPECTED_CI_WORKFLOW: .github/workflows/ci.yml
+          EXPECTED_CI_CONTEXT: test
         run: |
           set -euo pipefail
           # Resolve the rules that actually apply to the base branch. The first
@@ -387,6 +396,34 @@ jobs:
                 .parameters.required_status_checks[]? |
                 {context, app_id: (.integration_id // null)}]) | unique_by([.context, .app_id])
           ')"
+          # An empty configured set is not evidence that CI passed. Confirm the
+          # repository's known PR workflow and job at the reviewed commit, then
+          # use that job's check context as the fail-closed fallback. If it cannot
+          # be confirmed, stop rather than allowing vacuous all([]) success.
+          if [ "$(jq 'length' <<<"$required")" -eq 0 ]; then
+            workflow_file="$(mktemp)"
+            if ! gh api -H 'Accept: application/vnd.github.raw+json' \
+                "repos/$GH_REPO/contents/$EXPECTED_CI_WORKFLOW?ref=$REVIEWED_SHA" >"$workflow_file"; then
+              echo "Required context가 비어 있고 기대 CI workflow를 확인할 수 없습니다." >&2
+              exit 1
+            fi
+            if ! ruby -ryaml -e '
+              workflow = YAML.safe_load(File.read(ARGV[0]), aliases: true)
+              triggers = workflow["on"] || workflow[true]
+              jobs = workflow["jobs"]
+              job = jobs.is_a?(Hash) && jobs[ENV.fetch("EXPECTED_CI_CONTEXT")]
+              context = job.is_a?(Hash) ? (job["name"] || ENV.fetch("EXPECTED_CI_CONTEXT")) : nil
+              abort unless workflow.is_a?(Hash) &&
+                ((triggers.is_a?(Hash) && triggers.key?("pull_request")) ||
+                 (triggers.is_a?(Array) && triggers.include?("pull_request")) ||
+                 triggers == "pull_request") && context == ENV.fetch("EXPECTED_CI_CONTEXT")
+            ' "$workflow_file"; then
+              echo "Required context가 비어 있고 기대 CI check를 확인할 수 없습니다." >&2
+              exit 1
+            fi
+            required="$(jq -cn --arg context "$EXPECTED_CI_CONTEXT" '[{context: $context, app_id: null}]')"
+            echo "Configured required set이 비어 있어 확인된 기대 CI context를 사용합니다: $EXPECTED_CI_CONTEXT"
+          fi
           echo "Required contexts: $(jq -c . <<<"$required")"
 
           required_ok=false
@@ -394,6 +431,7 @@ jobs:
             pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
             current="$(jq -r .head.sha <<<"$pr")"
             [ "$current" = "$REVIEWED_SHA" ] || { echo "리뷰 이후 HEAD가 변경되어 merge하지 않습니다." >&2; exit 1; }
+            [ "$(jq -r .base.ref <<<"$pr")" = "$BASE_BRANCH" ] || { echo "리뷰 이후 base branch가 변경되어 merge하지 않습니다." >&2; exit 1; }
             [ "$(jq -r .mergeable <<<"$pr")" != "false" ] || { echo "merge conflict가 있어 중단합니다." >&2; exit 1; }
             checks="$(gh api "repos/$GH_REPO/commits/$current/check-runs?per_page=100" --jq '.check_runs')"
             statuses="$(gh api "repos/$GH_REPO/commits/$current/status" --jq '.statuses')"
@@ -418,7 +456,18 @@ jobs:
             sleep 20
           done
           [ "$required_ok" = true ] || { echo "Required CI가 모두 성공하지 않았거나 생성되지 않았습니다." >&2; exit 1; }
-          gh api "repos/$GH_REPO/issues/$CANDIDATE" --jq '.state == "open" and any(.labels[]?; .name == "approved")' | grep -qx true
+          # Re-fetch immediately before merge. Approval is reusable only while the
+          # normalized title/body fingerprint exactly matches the reviewed scope.
+          candidate_now="$(gh api "repos/$GH_REPO/issues/$CANDIDATE")"
+          jq -e '.state == "open" and any(.labels[]?; .name == "approved")' <<<"$candidate_now" >/dev/null
+          current_fingerprint="$(jq -c '{title, body: (.body // "")}' <<<"$candidate_now" | sha256sum | cut -d' ' -f1)"
+          [ "$current_fingerprint" = "$REVIEWED_CANDIDATE_FINGERPRINT" ] || {
+            echo "승인된 Candidate 요구사항이 Review 이후 변경되어 merge하지 않습니다." >&2
+            exit 1
+          }
+          final_pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
+          [ "$(jq -r .head.sha <<<"$final_pr")" = "$REVIEWED_SHA" ] || { echo "merge 직전 HEAD가 변경되었습니다." >&2; exit 1; }
+          [ "$(jq -r .base.ref <<<"$final_pr")" = "$BASE_BRANCH" ] || { echo "merge 직전 base branch가 변경되었습니다." >&2; exit 1; }
           gh pr merge "$PR_NUMBER" --repo "$GH_REPO" --squash --match-head-commit "$REVIEWED_SHA"
           gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body "모든 안전 조건과 최신 HEAD 리뷰 및 CI를 통과하여 자동 merge를 완료했습니다."
 

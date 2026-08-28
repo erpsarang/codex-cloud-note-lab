@@ -82,6 +82,25 @@ test('authorization and merge bind to repository branch and required contexts', 
   assert.match(workflow, /elif grep -q 'HTTP 404'/);
   assert.match(workflow, /if ! branch_rules=.*gh api/);
   assert.match(workflow, /repository ruleset 조회에 실패했습니다/);
+  assert.match(workflow, /EXPECTED_CI_WORKFLOW: \.github\/workflows\/ci\.yml/);
+  assert.match(workflow, /EXPECTED_CI_CONTEXT: test/);
+  assert.match(workflow, /if \[ "\$\(jq 'length' <<<"\$required"\)" -eq 0 \]/);
+  assert.match(workflow, /application\/vnd\.github\.raw\+json/);
+  assert.match(workflow, /triggers\.key\?\("pull_request"\)/);
+  assert.match(workflow, /required="\$\(jq -cn --arg context "\$EXPECTED_CI_CONTEXT"/);
+  assert.match(workflow, /base\.ref[\s\S]*"\$BASE_BRANCH"/);
+});
+
+test('merge revalidates the approved candidate requirements fingerprint', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  assert.match(workflow, /candidate_fingerprint: \$\{\{ steps\.gate\.outputs\.candidate_fingerprint \}\}/);
+  assert.match(workflow, /jq -c '\{title, body: \(\.body \/\/ ""\)\}'[\s\S]*sha256sum/);
+  assert.match(workflow, /REVIEWED_CANDIDATE_FINGERPRINT: \$\{\{ needs\.authorize\.outputs\.candidate_fingerprint \}\}/);
+  const refetch = workflow.indexOf('candidate_now="$(gh api');
+  const merge = workflow.indexOf('gh pr merge', refetch);
+  assert.ok(refetch > 0 && merge > refetch);
+  assert.match(workflow.slice(refetch, merge), /current_fingerprint[\s\S]*REVIEWED_CANDIDATE_FINGERPRINT/);
+  assert.match(workflow.slice(refetch, merge), /Candidate 요구사항이 Review 이후 변경/);
 });
 
 test('ON_HOLD is recorded before optional label provisioning', async () => {
