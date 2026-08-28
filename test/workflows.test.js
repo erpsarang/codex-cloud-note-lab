@@ -66,6 +66,19 @@ test('candidate execution, AI review, and contract creation use separate workflo
   assert.doesNotMatch(contract, /actions\/checkout|openai\/codex-action|npm (?:ci|install|test)/);
 });
 
+test('AI action runs from a clean trusted directory without the candidate checkout', async () => {
+  const review = await workflow('review-fix.yml');
+  const ai = review.slice(review.indexOf('  ai-review:'), review.indexOf('  merge-ready-contract:'));
+
+  assert.match(ai, /path: candidate-source/);
+  assert.match(ai, /git -C candidate-source[^\n]+diff --binary/);
+  assert.match(ai, /rm -rf candidate-source/);
+  assert.match(ai, /test ! -e candidate-source/);
+  assert.match(ai, /working-directory: \$\{\{ github\.workspace \}\}\/trusted-review-input/);
+  assert.match(ai, /Review only candidate\.diff and candidate-requirements\.md/);
+  assert.doesNotMatch(ai, /working-directory:.*candidate-source/);
+});
+
 test('workflow identity uses the REST path and validates run source identity', async () => {
   for (const name of ['review-fix.yml', 'trusted-merge.yml']) {
     const contents = await workflow(name);
