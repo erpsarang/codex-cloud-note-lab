@@ -7,6 +7,7 @@ const form = document.querySelector("#note-form");
 const input = document.querySelector("#note-input");
 const inputError = document.querySelector("#note-error");
 const storageStatus = document.querySelector("#storage-status");
+const emptyState = document.querySelector("#empty-state");
 const noteList = document.querySelector("#note-list");
 
 if (!loadResult.ok) {
@@ -21,6 +22,7 @@ function persistNotes() {
 
 function renderNotes() {
   noteList.replaceChildren();
+  emptyState.hidden = !loadResult.ok || notes.length > 0;
   const deleteButtons = [];
 
   notes.forEach((note, index) => {
