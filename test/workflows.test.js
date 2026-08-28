@@ -22,6 +22,15 @@ test('review-fix loop keeps its approval, iteration, HEAD, and policy gates', as
   assert.match(workflow, /npm install && npm test/);
 });
 
+test('forbidden-file policy checks both paths of every renamed file', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const policy = workflow.slice(workflow.indexOf('\n  policy:'), workflow.indexOf('\n  review:'));
+  assert.match(policy, /gh api --paginate --slurp/);
+  assert.match(policy, /\.filename, \(\.previous_filename \/\/ empty\)/);
+  assert.match(policy, /printf '%s\\n' "\$files" \| grep -Eq/);
+  assert.match(policy, /\^\\\.github\/workflows\//);
+});
+
 test('fix attempts are reserved before push and keyed by both SHAs', async () => {
   const workflow = await readWorkflow('review-fix-merge.yml');
   const reservation = workflow.indexOf('- name: push 전에 반복 횟수 영속 예약');
@@ -73,6 +82,15 @@ test('structured reviews validate findings and force hold for every P0 or P1', a
   assert.match(workflow, /if any\(\.findings\[\]; \.severity == "P0" or \.severity == "P1"\)/);
   assert.doesNotMatch(workflow, /\.result == "(?:pass|fix)" and any\(\.findings\[\]/);
   assert.match(workflow, /then \.result = "hold"/);
+});
+
+test('structured reviews normalize P2 findings to fix and no findings to pass', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const validation = workflow.slice(workflow.indexOf('- name: 리뷰 결과 검증'), workflow.indexOf('- name: 구조화된 리뷰 결과 업로드'));
+  assert.match(validation, /elif any\(\.findings\[\]; \.severity == "P2"\)/);
+  assert.match(validation, /then \.result = "fix"/);
+  assert.match(validation, /else \.result = "pass" end/);
+  assert.doesNotMatch(validation, /else \. end/);
 });
 
 test('Codex changes are snapshotted before dependency installation', async () => {

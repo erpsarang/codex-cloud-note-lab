@@ -107,7 +107,10 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          files="$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" --jq '.[].filename')"
+          # Inspect both sides of a rename. GitHub reports the protected source in
+          # previous_filename and the destination in filename.
+          files="$(gh api --paginate --slurp "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" \
+            --jq '.[][] | (.filename, (.previous_filename // empty))')"
           if printf '%s\n' "$files" | grep -Eq '^\.github/workflows/|(^|/)(secrets?|tokens?)(/|\.|$)|branch[-_ ]?protection|rulesets?|self[-_ ]?improvement.*(security|policy|boundary)'; then
             echo "allowed=false" >> "$GITHUB_OUTPUT"
           else
@@ -186,10 +189,13 @@ jobs:
               (.path | type == "string" and length > 0 and (contains("\n") | not)) and
               (.line | type == "number" and . >= 1 and floor == .) and
               (.message | type == "string" and length > 0))' review-result.json >/dev/null
-          # Blocking findings always require human review, regardless of whether
-          # the model supplied pass or fix as the top-level result.
+          # Derive the decision from validated findings instead of trusting an
+          # inconsistent top-level result from the model.
           jq 'if any(.findings[]; .severity == "P0" or .severity == "P1")
-              then .result = "hold" else . end' review-result.json > review-result.validated.json
+              then .result = "hold"
+              elif any(.findings[]; .severity == "P2")
+              then .result = "fix"
+              else .result = "pass" end' review-result.json > review-result.validated.json
           mv review-result.validated.json review-result.json
           # Only the scalar decision is consumed by later jobs. Keep the untrusted
           # multiline summary in the artifact so it can never become output syntax.
