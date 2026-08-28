@@ -31,6 +31,19 @@ test('forbidden-file policy checks both paths of every renamed file', async () =
   assert.match(policy, /\^\\\.github\/workflows\//);
 });
 
+test('Codex and agent instruction files are protected on both sides of renames', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const policy = workflow.slice(workflow.indexOf('\n  policy:'), workflow.indexOf('\n  review:'));
+  const fix = workflow.slice(workflow.indexOf('\n  fix:'), workflow.indexOf('\n  publish-fix:'));
+  for (const section of [policy, fix]) {
+    assert.match(section, /\(AGENTS\|CODEX\|CLAUDE\)\\\.md/);
+    assert.match(section, /copilot-instructions\\\.md/);
+    assert.match(section, /\\\.github\/instructions\/\.\*\\\.instructions\\\.md/);
+  }
+  assert.match(policy, /\.previous_filename/);
+  assert.match(fix, /name-status -z --find-renames/);
+});
+
 test('fix attempts are reserved before push and keyed by both SHAs', async () => {
   const workflow = await readWorkflow('review-fix-merge.yml');
   const reservation = workflow.indexOf('- name: push 전에 반복 횟수 영속 예약');
@@ -192,6 +205,15 @@ test('ON_HOLD is recorded before optional label provisioning', async () => {
   const label = workflow.indexOf('gh label create needs-human-review', hold);
   assert.ok(hold > 0 && label > hold);
   assert.match(workflow.slice(hold, label + 300), /gh label create[\s\S]*--force \|\| true/);
+});
+
+test('post-merge notification is best-effort and cannot trigger ON_HOLD', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const finish = workflow.slice(workflow.indexOf('\n  finish:'), workflow.indexOf('\n  on-hold:'));
+  const merge = finish.indexOf('gh pr merge');
+  const notification = finish.indexOf('gh pr comment', merge);
+  assert.ok(merge > 0 && notification > merge);
+  assert.match(finish.slice(notification), /gh pr comment[\s\S]*\|\| \\\n+\s*echo "merge 완료 알림을 게시하지 못했지만 merge는 이미 완료되었습니다/);
 });
 
 test('generated code jobs never receive the publication credential', async () => {

@@ -116,7 +116,11 @@ jobs:
           # previous_filename and the destination in filename.
           files="$(gh api --paginate --slurp "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" \
             --jq '.[][] | (.filename, (.previous_filename // empty))')"
-          if printf '%s\n' "$files" | grep -Eq '^\.github/workflows/|(^|/)(secrets?|tokens?)(/|\.|$)|branch[-_ ]?protection|rulesets?|self[-_ ]?improvement.*(security|policy|boundary)'; then
+          # Repository instruction files are part of the reviewer's trust boundary:
+          # a PR must not be able to change the instructions consumed by Codex or
+          # another automated agent, including by renaming one of those files.
+          forbidden='^\.github/workflows/|(^|/)(AGENTS|CODEX|CLAUDE)\.md$|^\.github/copilot-instructions\.md$|^\.github/instructions/.*\.instructions\.md$|(^|/)(secrets?|tokens?)(/|\.|$)|branch[-_ ]?protection|rulesets?|self[-_ ]?improvement.*(security|policy|boundary)'
+          if printf '%s\n' "$files" | grep -Eq "$forbidden"; then
             echo "allowed=false" >> "$GITHUB_OUTPUT"
           else
             echo "allowed=true" >> "$GITHUB_OUTPUT"
@@ -266,7 +270,7 @@ jobs:
           # Intentional package.json/package-lock.json edits already present are retained.
           git add --all
           [ -n "$(git diff --cached --name-only)" ] || { echo "수정 내용이 없습니다." >&2; exit 1; }
-          forbidden='^\.github/workflows/|(^|/)(secrets?|tokens?)(/|\.|$)|branch[-_ ]?protection|rulesets?|self[-_ ]?improvement.*(security|policy|boundary)'
+          forbidden='^\.github/workflows/|(^|/)(AGENTS|CODEX|CLAUDE)\.md$|^\.github/copilot-instructions\.md$|^\.github/instructions/.*\.instructions\.md$|(^|/)(secrets?|tokens?)(/|\.|$)|branch[-_ ]?protection|rulesets?|self[-_ ]?improvement.*(security|policy|boundary)'
           forbidden_path=false
           while IFS= read -r -d '' status; do
             IFS= read -r -d '' path
@@ -533,7 +537,12 @@ jobs:
           [ "$(jq -r .base.ref <<<"$final_pr")" = "$BASE_BRANCH" ] || { echo "merge 직전 base branch가 변경되었습니다." >&2; exit 1; }
           [ "$(jq -r .base.sha <<<"$final_pr")" = "$REVIEWED_BASE_SHA" ] || { echo "merge 직전 base commit이 변경되었습니다." >&2; exit 1; }
           gh pr merge "$PR_NUMBER" --repo "$GH_REPO" --squash --match-head-commit "$REVIEWED_SHA"
-          gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body "모든 안전 조건과 최신 HEAD 리뷰 및 CI를 통과하여 자동 merge를 완료했습니다."
+          # The merge is the terminal state transition. A transient notification
+          # failure after it succeeds must not fail finish and route a merged PR
+          # into the contradictory ON_HOLD path.
+          gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body \
+            "모든 안전 조건과 최신 HEAD 리뷰 및 CI를 통과하여 자동 merge를 완료했습니다." || \
+            echo "merge 완료 알림을 게시하지 못했지만 merge는 이미 완료되었습니다." >&2
 
   on-hold:
     needs: [authorize, policy, review, fix, publish-fix, finish]
