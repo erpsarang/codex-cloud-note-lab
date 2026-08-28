@@ -22,6 +22,33 @@ test('review-fix loop keeps its approval, iteration, HEAD, and policy gates', as
   assert.match(workflow, /npm install && npm test/);
 });
 
+test('fix attempts are reserved before push and keyed by both SHAs', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const reservation = workflow.indexOf('- name: push 전에 반복 횟수 영속 예약');
+  const push = workflow.indexOf('- name: trusted job에서 수정 게시');
+  assert.ok(reservation > 0 && reservation < push);
+  assert.match(workflow, /self-improvement-fix-reservation:\$\{ATTEMPT\}:\$\{EXPECTED_SHA\}:\$\{NEW_SHA\}/);
+  assert.match(workflow, /capture\("<!-- self-improvement-fix-reservation:/);
+});
+
+test('Codex changes are snapshotted before dependency installation', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const snapshot = workflow.indexOf('- name: Codex intended changes 확정 및 patch 패키징');
+  const install = workflow.indexOf('run: npm install && npm test', snapshot);
+  assert.ok(snapshot > 0 && snapshot < install);
+  assert.match(workflow.slice(snapshot, install), /git diff --cached --binary --full-index/);
+});
+
+test('authorization and merge bind to repository branch and required contexts', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  assert.match(workflow, /HEAD_REPO.*github\.event\.pull_request\.head\.repo\.full_name/);
+  assert.match(workflow, /HEAD_BRANCH" = "codex\/self-improvement-\$candidate"/);
+  assert.match(workflow, /protection\/required_status_checks/);
+  assert.match(workflow, /rules\/branches\/\$encoded_base/);
+  assert.match(workflow, /all\(\$required\[\];/);
+  assert.match(workflow, /생성되지 않았습니다/);
+});
+
 test('generated code jobs never receive the publication credential', async () => {
   const workflow = await readWorkflow('review-fix-merge.yml');
   const reviewAndFix = workflow.slice(workflow.indexOf('\n  review:'), workflow.indexOf('\n  publish-fix:'));

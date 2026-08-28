@@ -19,7 +19,6 @@ env:
 
 jobs:
   authorize:
-    if: startsWith(github.event.pull_request.head.ref, 'codex/self-improvement-')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -36,11 +35,17 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BODY: ${{ github.event.pull_request.body }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           echo "authorized=false" >> "$GITHUB_OUTPUT"
           candidate="$(printf '%s' "$PR_BODY" | sed -n 's/.*<!-- self-improvement-candidate:\([0-9][0-9]*\) -->.*/\1/p' | head -1)"
           [ -n "$candidate" ] || { echo "자동 생성 표식을 찾지 못했습니다."; exit 0; }
+          [ "$HEAD_REPO" = "$GH_REPO" ] || { echo "fork PR은 자동화할 수 없습니다."; exit 0; }
+          [ "$HEAD_BRANCH" = "codex/self-improvement-$candidate" ] || {
+            echo "후보 번호에 대응하는 게시 branch가 아닙니다."; exit 0;
+          }
 
           issue="$(gh api "repos/$GH_REPO/issues/$candidate")"
           printf '%s' "$issue" | jq -e '
@@ -50,9 +55,10 @@ jobs:
             ((.body // "") | contains("<!-- self-improvement-trigger-pr:"))
           ' >/dev/null || { echo "후보가 열려 있지 않거나 approved 승인이 없습니다."; exit 0; }
 
-          # Comment markers make retries idempotent and provide the persisted loop count.
+          # A trusted publication reservation is written before every push. Counting
+          # reservations (including a push that failed) makes the limit fail closed.
           attempt="$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" \
-            --jq '[.[] | (.body // "") | capture("<!-- self-improvement-fix:(?<n>[0-9]+):[0-9a-f]+ -->")? | .n // empty | tonumber] | max // 0')"
+            --jq '[.[] | (.body // "") | capture("<!-- self-improvement-fix-reservation:(?<n>[0-9]+):[0-9a-f]+:[0-9a-f]+ -->")? | .n // empty | tonumber] | max // 0')"
           echo "authorized=true" >> "$GITHUB_OUTPUT"
           echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
@@ -167,18 +173,12 @@ jobs:
             ruleset·Self-Improvement 보안 경계 변경은 금지합니다. 필요한 테스트를 추가하고
             npm test가 통과하게 하세요. commit, push, PR 생성, merge는 하지 마세요.
 
-      - name: Node.js 설정
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: 수정 후 테스트
-        run: npm install && npm test
-
-      - name: 수정 patch 검증 및 패키징
+      - name: Codex intended changes 확정 및 patch 패키징
         id: patch
         run: |
           set -euo pipefail
+          # Snapshot before npm install so installer side effects cannot enter the patch.
+          # Intentional package.json/package-lock.json edits already present are retained.
           git add --all
           [ -n "$(git diff --cached --name-only)" ] || { echo "수정 내용이 없습니다." >&2; exit 1; }
           if git diff --cached --name-only | grep -Eq '^\.github/workflows/|(^|/)(secrets?|tokens?)(/|\.|$)|branch[-_ ]?protection|rulesets?|self[-_ ]?improvement.*(security|policy|boundary)'; then
@@ -187,6 +187,14 @@ jobs:
           fi
           git diff --cached --binary --full-index > "$RUNNER_TEMP/fix.patch"
           echo "created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Node.js 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 확정된 수정 후 테스트
+        run: npm install && npm test
 
       - name: 반복 횟수 계산
         id: counter
@@ -221,6 +229,7 @@ jobs:
           path: ${{ runner.temp }}/fix
 
       - name: HEAD 재확인, 적용 및 commit
+        id: commit
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -236,6 +245,29 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git -c core.hooksPath=/dev/null commit -m "자기개선 리뷰 수정 ${ATTEMPT}/$MAX_FIX_ATTEMPTS"
+          echo "new_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: push 전에 반복 횟수 영속 예약
+        env:
+          GH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_SHA: ${{ needs.authorize.outputs.head_sha }}
+          NEW_SHA: ${{ steps.commit.outputs.new_sha }}
+          ATTEMPT: ${{ needs.fix.outputs.next_attempt }}
+        run: |
+          set -euo pipefail
+          marker="<!-- self-improvement-fix-reservation:${ATTEMPT}:${EXPECTED_SHA}:${NEW_SHA} -->"
+          comments="$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --jq '.[].body // ""')"
+          if grep -Fqx "$marker" <<<"$comments"; then
+            echo "동일 expected/new SHA 예약이 이미 존재합니다."
+          elif grep -Eq "self-improvement-fix-reservation:[0-9]+:${EXPECTED_SHA}:[0-9a-f]+" <<<"$comments"; then
+            echo "같은 expected SHA에 다른 게시 예약이 이미 있어 중단합니다." >&2
+            exit 1
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body \
+              "$marker ${ATTEMPT}/${MAX_FIX_ATTEMPTS}회 수정을 push 전에 예약했습니다."
+          fi
 
       - name: trusted job에서 수정 게시
         env:
@@ -247,16 +279,17 @@ jobs:
             -c http.https://github.com/.extraheader="AUTHORIZATION: basic $basic_auth" \
             push --no-verify origin "HEAD:$HEAD_BRANCH"
 
-      - name: 재실행 방지 표식과 진행 상태 기록
+      - name: 게시 완료 상태 기록
         env:
           GH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_PUBLISH_TOKEN }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           OLD_SHA: ${{ needs.authorize.outputs.head_sha }}
+          NEW_SHA: ${{ steps.commit.outputs.new_sha }}
           ATTEMPT: ${{ needs.fix.outputs.next_attempt }}
         run: |
           gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body \
-            "<!-- self-improvement-fix:${ATTEMPT}:${OLD_SHA} -->자동 리뷰 지적에 따라 ${ATTEMPT}/${MAX_FIX_ATTEMPTS}회 수정을 게시했습니다. 최신 HEAD에서 자동 재Review를 시작합니다."
+            "<!-- self-improvement-fix-published:${ATTEMPT}:${OLD_SHA}:${NEW_SHA} -->자동 리뷰 지적에 따라 ${ATTEMPT}/${MAX_FIX_ATTEMPTS}회 수정을 게시했습니다. 최신 HEAD에서 자동 재Review를 시작합니다."
 
   finish:
     needs: [authorize, policy, review]
@@ -271,28 +304,61 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           CANDIDATE: ${{ needs.authorize.outputs.candidate }}
           REVIEWED_SHA: ${{ needs.review.outputs.reviewed_sha }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
+          # Resolve the rules that actually apply to the base branch. The first
+          # endpoint covers classic branch protection; the second covers rulesets.
+          encoded_base="$(jq -rn --arg value "$BASE_BRANCH" '$value | @uri')"
+          classic="$(gh api "repos/$GH_REPO/branches/$encoded_base/protection/required_status_checks" 2>/dev/null || echo '{}')"
+          branch_rules="$(gh api "repos/$GH_REPO/rules/branches/$encoded_base" 2>/dev/null || echo '[]')"
+          required="$(jq -cn --argjson classic "$classic" --argjson rules "$branch_rules" '
+            ([($classic.checks // [])[] | {context, app_id: (.app_id // null)}] +
+             [($classic.contexts // [])[] as $context |
+                select(any(($classic.checks // [])[]; .context == $context) | not) |
+                {context: $context, app_id: null}] +
+             [$rules[]? | select(.type == "required_status_checks") |
+                .parameters.required_status_checks[]? |
+                {context, app_id: (.integration_id // null)}]) | unique_by([.context, .app_id])
+          ')"
+          echo "Required contexts: $(jq -c . <<<"$required")"
+
+          required_ok=false
           for wait_count in $(seq 1 30); do
             pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
             current="$(jq -r .head.sha <<<"$pr")"
             [ "$current" = "$REVIEWED_SHA" ] || { echo "리뷰 이후 HEAD가 변경되어 merge하지 않습니다." >&2; exit 1; }
             [ "$(jq -r .mergeable <<<"$pr")" != "false" ] || { echo "merge conflict가 있어 중단합니다." >&2; exit 1; }
-            checks="$(gh api "repos/$GH_REPO/commits/$current/check-runs" --jq '[.check_runs[] | select(.name != "exact HEAD, CI, 충돌 및 승인 재검증 후 merge")]')"
-            pending="$(jq '[.[] | select(.status != "completed")] | length' <<<"$checks")"
-            failed="$(jq '[.[] | select(.status == "completed" and (.conclusion | IN("success", "neutral", "skipped") | not))] | length' <<<"$checks")"
-            [ "$failed" -eq 0 ] || { echo "Required CI check 실패로 중단합니다." >&2; exit 1; }
-            [ "$pending" -eq 0 ] && [ "$(jq length <<<"$checks")" -gt 0 ] && break
+            checks="$(gh api "repos/$GH_REPO/commits/$current/check-runs?per_page=100" --jq '.check_runs')"
+            statuses="$(gh api "repos/$GH_REPO/commits/$current/status" --jq '.statuses')"
+            # A required context is accepted only if it exists on REVIEWED_SHA and
+            # its latest check-run or commit status is successful. Missing contexts
+            # therefore remain pending instead of being mistaken for success.
+            if jq -en --argjson required "$required" --argjson checks "$checks" --argjson statuses "$statuses" '
+              all($required[];
+                . as $req |
+                (([$checks[] | select(.name == $req.context and
+                    (($req.app_id == null) or (.app.id == $req.app_id)))] |
+                    sort_by(.started_at // .created_at) | last) as $check |
+                 ([$statuses[] | select(.context == $req.context)] |
+                    sort_by(.created_at) | last) as $status |
+                 (($check != null and $check.status == "completed" and
+                    ($check.conclusion | IN("success", "neutral", "skipped"))) or
+                  ($req.app_id == null and $status != null and $status.state == "success"))))
+            ' >/dev/null; then
+              required_ok=true
+              break
+            fi
             sleep 20
           done
-          [ "$pending" -eq 0 ] || { echo "CI 결과 대기 시간이 초과되었습니다." >&2; exit 1; }
+          [ "$required_ok" = true ] || { echo "Required CI가 모두 성공하지 않았거나 생성되지 않았습니다." >&2; exit 1; }
           gh api "repos/$GH_REPO/issues/$CANDIDATE" --jq '.state == "open" and any(.labels[]?; .name == "approved")' | grep -qx true
           gh pr merge "$PR_NUMBER" --repo "$GH_REPO" --squash --match-head-commit "$REVIEWED_SHA"
           gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body "모든 안전 조건과 최신 HEAD 리뷰 및 CI를 통과하여 자동 merge를 완료했습니다."
 
   on-hold:
-    needs: [authorize, policy, review]
-    if: always() && needs.authorize.outputs.authorized == 'true' && (needs.policy.outputs.allowed == 'false' || needs.policy.result == 'failure' || needs.review.outputs.result == 'hold' || (needs.review.outputs.result == 'fix' && fromJSON(needs.authorize.outputs.attempt) >= 3) || needs.review.result == 'failure')
+    needs: [authorize, policy, review, fix, publish-fix, finish]
+    if: always() && needs.authorize.outputs.authorized == 'true' && (needs.policy.outputs.allowed == 'false' || needs.policy.result == 'failure' || needs.review.outputs.result == 'hold' || (needs.review.outputs.result == 'fix' && fromJSON(needs.authorize.outputs.attempt) >= 3) || needs.review.result == 'failure' || needs.fix.result == 'failure' || needs.publish-fix.result == 'failure' || needs.finish.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
