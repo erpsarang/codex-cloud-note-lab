@@ -16,7 +16,7 @@ test('manual CI constructs and records the prospective merge tree', async () => 
   assert.doesNotMatch(ci, /upload-artifact|prospective-merge\.json/);
 });
 
-test('Review/Fix binds MERGE_READY to the successful merge CI run', async () => {
+test('Review binds MERGE_READY to the successful merge CI run', async () => {
   const review = await workflow('review-fix.yml');
 
   assert.match(review, /git merge-tree --write-tree "\$BASE_SHA" "\$HEAD_SHA"/);
@@ -82,4 +82,25 @@ test('Trusted Merge rejects a changed base and revalidates the CI run', async ()
   assert.match(trusted, /\[ "\$current_base" = "\$expected_base" \]/);
   assert.match(trusted, /actions\/runs\/\$ci_run_id/);
   assert.match(trusted, /workflow_dispatch\\tsuccess/);
+});
+
+test('Trusted Merge atomically binds the tested base, head, and result tree', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+
+  assert.match(trusted, /expected_tree=.*testedResultTree/);
+  assert.match(trusted, /git merge-tree --write-tree "\$expected_base" "\$expected_head"/);
+  assert.match(trusted, /\[ "\$actual_tree" = "\$expected_tree" \]/);
+  assert.match(trusted, /commit-tree "\$expected_tree" -p "\$expected_base" -p "\$expected_head"/);
+  assert.match(trusted, /--force-with-lease="refs\/heads\/\$DEFAULT_BRANCH:\$expected_base"/);
+  assert.doesNotMatch(trusted, /pulls\/\$pr_number\/merge/);
+});
+
+test('AI stage is review-only and exposes no automated fix contract', async () => {
+  const review = await workflow('review-fix.yml');
+  const trusted = await workflow('trusted-merge.yml');
+
+  assert.match(review, /review-only: do not propose or apply an automated fix/);
+  assert.match(review, /VERDICT: PASS or VERDICT: NON_PASS/);
+  assert.doesNotMatch(review, /reviewFixAttempts/);
+  assert.doesNotMatch(trusted, /\.reviewFixAttempts/);
 });

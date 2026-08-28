@@ -236,7 +236,7 @@ jobs:
           Closes #$ISSUE_NUMBER
 
           <!-- self-improvement-candidate:$ISSUE_NUMBER -->
-          이 pull request는 자동으로 생성되었습니다. Review/Fix workflow는 검증된
+          이 pull request는 자동으로 생성되었습니다. Review-only workflow는 검증된
           MERGE_READY artifact만 만들며 실제 merge는 별도의 Trusted Merge workflow가 수행합니다.
           EOF
 
@@ -260,7 +260,7 @@ jobs:
               publicationRunId:$runId,publicationRunAttempt:$runAttempt,pullRequest:$pr}' \
             > "$RUNNER_TEMP/publication-provenance.json"
           printf 'pr_number=%s\n' "$pr_number" >> "$GITHUB_OUTPUT"
-          # Events emitted with GITHUB_TOKEN do not start the Review/Fix flow.
+          # Events emitted with GITHUB_TOKEN do not start the review-only flow.
       - name: Upload immutable publication provenance
         uses: actions/upload-artifact@v4
         with:

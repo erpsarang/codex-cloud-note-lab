@@ -2,7 +2,7 @@ name: Trusted Merge
 
 on:
   workflow_run:
-    workflows: [Self-Improvement Review Fix]
+    workflows: [Self-Improvement Review]
     types: [completed]
 
 permissions:
@@ -24,7 +24,7 @@ jobs:
     steps:
       # No checkout, package installation, repository script, or AI action is
       # permitted in this workflow. The artifact is bound to the completed run.
-      - name: Download MERGE_READY from the completed Review/Fix run
+      - name: Download MERGE_READY from the completed review run
         uses: actions/download-artifact@v4
         with:
           pattern: merge-ready-*
@@ -48,12 +48,13 @@ jobs:
             (.testedResultTree | test("^[0-9a-f]{40}$")) and (.ciRunId > 0) and
             .ciContext == "test" and .ciResult == "success" and
             (.publicationRunId > 0) and (.publicationRunAttempt > 0) and
-            (.reviewFixAttempts >= 0 and .reviewFixAttempts <= 3)' "$CONTRACT" >/dev/null
+            (has("reviewFixAttempts") | not)' "$CONTRACT" >/dev/null
 
           candidate="$(jq -r .candidate "$CONTRACT")"
           pr_number="$(jq -r .pullRequest "$CONTRACT")"
           expected_head="$(jq -r .headSha "$CONTRACT")"
           expected_base="$(jq -r .baseSha "$CONTRACT")"
+          expected_tree="$(jq -r .testedResultTree "$CONTRACT")"
           ci_run_id="$(jq -r .ciRunId "$CONTRACT")"
           expected_fingerprint="$(jq -r .requirementsFingerprint "$CONTRACT")"
           publication_run_id="$(jq -r .publicationRunId "$CONTRACT")"
@@ -86,7 +87,8 @@ jobs:
           actual_fingerprint="$(jq -r .body <<<"$issue" | sha256sum | cut -d' ' -f1)"
           [ "$actual_fingerprint" = "$expected_fingerprint" ]
 
-          # Fail closed if the default branch moved after the tested merge was built.
+          # This early comparison gives a clear failure before preparing the merge.
+          # The compare-and-swap push below repeats it atomically with publication.
           current_base="$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)"
           [ "$current_base" = "$expected_base" ]
 
@@ -103,9 +105,28 @@ jobs:
             --jq '.[] | .filename, (.previous_filename // empty)' |
             if grep -Eq '^\.github/(workflows|actions)/'; then exit 1; fi
 
-          result="$(gh api --method PUT "repos/$GH_REPO/pulls/$pr_number/merge" \
-            -f merge_method=squash -f sha="$expected_head")"
-          jq -e '.merged == true' <<<"$result" >/dev/null
+          # Build a commit with the exact tested result tree, then update the default
+          # branch with a server-side compare-and-swap. Unlike the pull merge API's
+          # head-only `sha` guard, force-with-lease rejects the push atomically if
+          # expected_base is no longer the branch tip. No worktree is created and no
+          # candidate code, hook, package, or test is executed in Trusted Merge.
+          git init "$RUNNER_TEMP/atomic-merge"
+          cd "$RUNNER_TEMP/atomic-merge"
+          git config core.hooksPath /dev/null
+          git remote add origin "https://github.com/$GH_REPO.git"
+          gh auth setup-git
+          git fetch --no-tags origin "$expected_base" "$expected_head"
+          actual_tree="$(git merge-tree --write-tree "$expected_base" "$expected_head")"
+          [ "$actual_tree" = "$expected_tree" ]
+          merge_commit="$(printf 'Self-Improvement candidate #%s (PR #%s)\n' "$candidate" "$pr_number" |
+            git -c user.name='Self-Improvement Trusted Merge' \
+                -c user.email='self-improvement@users.noreply.github.com' \
+                commit-tree "$expected_tree" -p "$expected_base" -p "$expected_head")"
+          git push origin "$merge_commit:refs/heads/$DEFAULT_BRANCH" \
+            --force-with-lease="refs/heads/$DEFAULT_BRANCH:$expected_base"
+
+          # GitHub should recognize the head as merged after the atomic ref update.
+          gh api "repos/$GH_REPO/pulls/$pr_number" --jq .merged | grep -Fx true
 
       - name: Put a changed or unverifiable candidate ON_HOLD
         if: failure()

@@ -15,7 +15,7 @@ on:
         required: true
         type: string
       contract_nonce:
-        description: Unique Review/Fix run identifier
+        description: Unique review run identifier
         required: true
         type: string
 
