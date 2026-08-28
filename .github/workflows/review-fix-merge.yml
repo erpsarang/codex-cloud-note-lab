@@ -25,6 +25,7 @@ jobs:
       authorized: ${{ steps.gate.outputs.authorized }}
       candidate: ${{ steps.gate.outputs.candidate }}
       head_sha: ${{ steps.gate.outputs.head_sha }}
+      base_sha: ${{ steps.gate.outputs.base_sha }}
       attempt: ${{ steps.gate.outputs.attempt }}
       candidate_fingerprint: ${{ steps.gate.outputs.candidate_fingerprint }}
     steps:
@@ -38,6 +39,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           echo "authorized=false" >> "$GITHUB_OUTPUT"
@@ -76,6 +78,7 @@ jobs:
           echo "authorized=true" >> "$GITHUB_OUTPUT"
           echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
           echo "attempt=$attempt" >> "$GITHUB_OUTPUT"
           echo "candidate_fingerprint=$candidate_fingerprint" >> "$GITHUB_OUTPUT"
 
@@ -345,7 +348,7 @@ jobs:
 
   finish:
     needs: [authorize, policy, review]
-    if: always() && needs.authorize.outputs.authorized == 'true' && needs.policy.outputs.allowed == 'true' && needs.review.outputs.result == 'pass'
+    if: always() && needs.authorize.outputs.authorized == 'true' && needs.policy.outputs.allowed == 'true' && needs.review.result == 'success' && needs.review.outputs.result == 'pass'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -358,6 +361,7 @@ jobs:
           REVIEWED_CANDIDATE_FINGERPRINT: ${{ needs.authorize.outputs.candidate_fingerprint }}
           REVIEWED_SHA: ${{ needs.review.outputs.reviewed_sha }}
           BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          REVIEWED_BASE_SHA: ${{ needs.authorize.outputs.base_sha }}
           EXPECTED_CI_WORKFLOW: .github/workflows/ci.yml
           EXPECTED_CI_CONTEXT: test
         run: |
@@ -432,6 +436,7 @@ jobs:
             current="$(jq -r .head.sha <<<"$pr")"
             [ "$current" = "$REVIEWED_SHA" ] || { echo "리뷰 이후 HEAD가 변경되어 merge하지 않습니다." >&2; exit 1; }
             [ "$(jq -r .base.ref <<<"$pr")" = "$BASE_BRANCH" ] || { echo "리뷰 이후 base branch가 변경되어 merge하지 않습니다." >&2; exit 1; }
+            [ "$(jq -r .base.sha <<<"$pr")" = "$REVIEWED_BASE_SHA" ] || { echo "리뷰/CI 기준 base commit이 변경되어 merge하지 않습니다." >&2; exit 1; }
             [ "$(jq -r .mergeable <<<"$pr")" != "false" ] || { echo "merge conflict가 있어 중단합니다." >&2; exit 1; }
             checks="$(gh api "repos/$GH_REPO/commits/$current/check-runs?per_page=100" --jq '.check_runs')"
             statuses="$(gh api "repos/$GH_REPO/commits/$current/status" --jq '.statuses')"
@@ -468,6 +473,7 @@ jobs:
           final_pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
           [ "$(jq -r .head.sha <<<"$final_pr")" = "$REVIEWED_SHA" ] || { echo "merge 직전 HEAD가 변경되었습니다." >&2; exit 1; }
           [ "$(jq -r .base.ref <<<"$final_pr")" = "$BASE_BRANCH" ] || { echo "merge 직전 base branch가 변경되었습니다." >&2; exit 1; }
+          [ "$(jq -r .base.sha <<<"$final_pr")" = "$REVIEWED_BASE_SHA" ] || { echo "merge 직전 base commit이 변경되었습니다." >&2; exit 1; }
           gh pr merge "$PR_NUMBER" --repo "$GH_REPO" --squash --match-head-commit "$REVIEWED_SHA"
           gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body "모든 안전 조건과 최신 HEAD 리뷰 및 CI를 통과하여 자동 merge를 완료했습니다."
 

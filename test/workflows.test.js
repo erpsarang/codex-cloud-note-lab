@@ -103,6 +103,27 @@ test('merge revalidates the approved candidate requirements fingerprint', async 
   assert.match(workflow.slice(refetch, merge), /Candidate 요구사항이 Review 이후 변경/);
 });
 
+test('finish requires a successful review job as well as a pass decision', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const finish = workflow.slice(workflow.indexOf('\n  finish:'), workflow.indexOf('\n  on-hold:'));
+  assert.match(finish, /needs\.review\.result == 'success'/);
+  assert.match(finish, /needs\.review\.outputs\.result == 'pass'/);
+});
+
+test('review and CI stay pinned to the exact event-time base commit', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  assert.match(workflow, /BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(workflow, /base_sha: \$\{\{ steps\.gate\.outputs\.base_sha \}\}/);
+  assert.match(workflow, /REVIEWED_BASE_SHA: \$\{\{ needs\.authorize\.outputs\.base_sha \}\}/);
+  const finish = workflow.slice(workflow.indexOf('\n  finish:'), workflow.indexOf('\n  on-hold:'));
+  const poll = finish.indexOf('for wait_count');
+  const finalCheck = finish.indexOf('final_pr=');
+  const merge = finish.indexOf('gh pr merge');
+  assert.ok(poll > 0 && finalCheck > poll && merge > finalCheck);
+  assert.match(finish.slice(poll, finalCheck), /\.base\.sha[\s\S]*REVIEWED_BASE_SHA/);
+  assert.match(finish.slice(finalCheck, merge), /\.base\.sha[\s\S]*REVIEWED_BASE_SHA/);
+});
+
 test('ON_HOLD is recorded before optional label provisioning', async () => {
   const workflow = await readWorkflow('review-fix-merge.yml');
   const hold = workflow.indexOf('gh pr comment "$PR_NUMBER"', workflow.indexOf('\n  on-hold:'));
