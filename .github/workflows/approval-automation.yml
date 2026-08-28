@@ -84,8 +84,8 @@ jobs:
                 '[.[] | select(.ref == $ref)] | length'
           )"
           if [ "$branch_count" -eq 1 ]; then
-            echo "Remote branch $IMPLEMENTATION_BRANCH already exists; its missing pull request will be recovered"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "기존 구현 branch의 publication provenance를 검증할 수 없어 중단합니다" >&2
+            exit 1
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -251,10 +251,12 @@ jobs:
           requirements_fingerprint="$(gh api "repos/$GH_REPO/issues/$ISSUE_NUMBER" --jq .body | sha256sum | cut -d' ' -f1)"
           jq -n -S --argjson candidate "$ISSUE_NUMBER" --arg fingerprint "$requirements_fingerprint" \
             --arg head "$published_head" --arg workflow "$GITHUB_WORKFLOW_REF" \
+            --arg sourceSha "$GITHUB_SHA" --arg sourceBranch "$GITHUB_REF_NAME" \
             --argjson runId "$GITHUB_RUN_ID" --argjson runAttempt "$GITHUB_RUN_ATTEMPT" \
             --argjson pr "$pr_number" \
             '{version:1,candidate:$candidate,requirementsFingerprint:$fingerprint,
               publishedHeadSha:$head,publicationWorkflow:$workflow,
+              publicationSourceSha:$sourceSha,publicationSourceBranch:$sourceBranch,
               publicationRunId:$runId,publicationRunAttempt:$runAttempt,pullRequest:$pr}' \
             > "$RUNNER_TEMP/publication-provenance.json"
           printf 'pr_number=%s\n' "$pr_number" >> "$GITHUB_OUTPUT"

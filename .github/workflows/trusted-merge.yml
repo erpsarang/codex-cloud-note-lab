@@ -62,10 +62,10 @@ jobs:
           # Independently re-read the immutable Approval Automation artifact;
           # mutable PR names, titles, branches, and bodies grant no authority.
           publication_run="$(gh api "repos/$GH_REPO/actions/runs/$publication_run_id")"
-          jq -e --arg workflow "$GITHUB_REPOSITORY/.github/workflows/approval-automation.yml@" \
+          jq -e --arg workflow ".github/workflows/approval-automation.yml" \
             --argjson attempt "$publication_run_attempt" \
             '.event == "issues" and .conclusion == "success" and .run_attempt == $attempt and
-             (.path | startswith($workflow))' <<<"$publication_run" >/dev/null
+             .path == $workflow' <<<"$publication_run" >/dev/null
           publication_artifact="$(gh api "repos/$GH_REPO/actions/runs/$publication_run_id/artifacts" \
             --jq '.artifacts[] | select(.name == "candidate-publication-'"$publication_run_id-$publication_run_attempt"'") | .id')"
           test "$(wc -l <<<"$publication_artifact")" -eq 1
@@ -77,6 +77,9 @@ jobs:
             '.candidate==$candidate and .pullRequest==$pr and .publishedHeadSha==$head and
              .requirementsFingerprint==$fingerprint and .publicationRunId==$run and
              .publicationRunAttempt==$attempt' "$RUNNER_TEMP/publication.json" >/dev/null
+          jq -e --arg sha "$(jq -r .publicationSourceSha "$RUNNER_TEMP/publication.json")" \
+            --arg ref "$(jq -r .publicationSourceBranch "$RUNNER_TEMP/publication.json")" \
+            '.head_sha == $sha and .head_branch == $ref' <<<"$publication_run" >/dev/null
 
           issue="$(gh api "repos/$GH_REPO/issues/$candidate")"
           jq -e '.state == "open" and ([.labels[].name] | index("approved") != null)' <<<"$issue" >/dev/null

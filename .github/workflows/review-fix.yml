@@ -41,10 +41,10 @@ jobs:
           set -euo pipefail
           case "$PUBLICATION_RUN_ID:$PUBLICATION_RUN_ATTEMPT" in *[!0-9:]*|:*|*:) exit 1;; esac
           run="$(gh api "repos/$GH_REPO/actions/runs/$PUBLICATION_RUN_ID")"
-          jq -e --arg workflow "$GITHUB_REPOSITORY/.github/workflows/approval-automation.yml@" \
+          jq -e --arg workflow ".github/workflows/approval-automation.yml" \
             --argjson attempt "$PUBLICATION_RUN_ATTEMPT" \
             '.event == "issues" and .run_attempt == $attempt and
-             (.path | startswith($workflow))' <<<"$run" >/dev/null
+             .path == $workflow' <<<"$run" >/dev/null
           artifact="$(gh api "repos/$GH_REPO/actions/runs/$PUBLICATION_RUN_ID/artifacts" \
             --jq '.artifacts[] | select(.name == "candidate-publication-'"$PUBLICATION_RUN_ID-$PUBLICATION_RUN_ATTEMPT"'") | .id')"
           test "$(wc -l <<<"$artifact")" -eq 1
@@ -62,12 +62,16 @@ jobs:
         run: |
           set -euo pipefail
           provenance="$(cat "$RUNNER_TEMP/provenance.json")"
+          publication_run="$(gh api "repos/$GH_REPO/actions/runs/$PUBLICATION_RUN_ID")"
           jq -e --argjson pr "$PR_NUMBER" --argjson run "$PUBLICATION_RUN_ID" \
             --argjson attempt "$PUBLICATION_RUN_ATTEMPT" \
             --arg workflow "$GITHUB_REPOSITORY/.github/workflows/approval-automation.yml@" \
             '.version == 1 and .pullRequest == $pr and .publicationRunId == $run and
              .publicationRunAttempt == $attempt and (.publicationWorkflow | startswith($workflow)) and
              (.publishedHeadSha | test("^[0-9a-f]{40}$"))' <<<"$provenance" >/dev/null
+          jq -e --arg sha "$(jq -r .publicationSourceSha <<<"$provenance")" \
+            --arg ref "$(jq -r .publicationSourceBranch <<<"$provenance")" \
+            '.head_sha == $sha and .head_branch == $ref' <<<"$publication_run" >/dev/null
           candidate="$(jq -r .candidate <<<"$provenance")"
           fingerprint="$(jq -r .requirementsFingerprint <<<"$provenance")"
           published_head="$(jq -r .publishedHeadSha <<<"$provenance")"
@@ -97,24 +101,6 @@ jobs:
             ${{ runner.temp }}/candidate-requirements.md
           if-no-files-found: error
           retention-days: 1
-
-  candidate-test:
-    needs: authorize
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      # This disposable, no-secret runner is the only job that executes candidate code.
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.authorize.outputs.head }}
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - run: npm ci
-      - run: npm test
 
   validate-test:
     needs: authorize
@@ -150,16 +136,18 @@ jobs:
         run: |
           set -euo pipefail
           nonce="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          title="prospective-merge-$nonce"
           gh workflow run ci.yml --repo "$GH_REPO" --ref "$BASE_BRANCH" -f tested_base_sha="$BASE_SHA" -f tested_head_sha="$HEAD_SHA" -f contract_nonce="$nonce"
           for attempt in $(seq 1 30); do
-            artifact="$(gh api "repos/$GH_REPO/actions/artifacts?name=prospective-merge-$nonce" --jq '.artifacts | sort_by(.created_at) | last // empty')"
-            if [ -n "$artifact" ]; then
-              run_id="$(jq -r '.workflow_run.id' <<<"$artifact")"
-              [ "$(gh api "repos/$GH_REPO/actions/runs/$run_id" --jq '.conclusion // ""')" = success ] || { sleep 10; continue; }
-              gh api "repos/$GH_REPO/actions/artifacts/$(jq -r .id <<<"$artifact")/zip" > "$RUNNER_TEMP/ci.zip"
-              unzip -p "$RUNNER_TEMP/ci.zip" prospective-merge.json > "$RUNNER_TEMP/ci.json"
-              jq -e --arg base "$BASE_SHA" --arg head "$HEAD_SHA" --arg tree "$RESULT_TREE" --arg nonce "$nonce" --argjson run "$run_id" \
-                '.testedBaseSha==$base and .testedHeadSha==$head and .testedResultTree==$tree and .contractNonce==$nonce and .ciRunId==$run' "$RUNNER_TEMP/ci.json" >/dev/null
+            runs="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=$BASE_BRANCH")"
+            run="$(jq -c --arg title "$title" '[.workflow_runs[] | select(.display_title == $title)] | if length == 1 then .[0] else empty end' <<<"$runs")"
+            if [ -n "$run" ]; then
+              run_id="$(jq -r .id <<<"$run")"
+              conclusion="$(jq -r '.conclusion // ""' <<<"$run")"
+              [ "$conclusion" != failure ] && [ "$conclusion" != cancelled ] || exit 1
+              [ "$conclusion" = success ] || { sleep 10; continue; }
+              jq -e --arg base "$BASE_SHA" --arg path ".github/workflows/ci.yml" \
+                '.event == "workflow_dispatch" and .head_sha == $base and .path == $path and .run_attempt == 1' <<<"$run" >/dev/null
               jq -n -S --arg base "$BASE_SHA" --arg head "$HEAD_SHA" --arg tree "$RESULT_TREE" --argjson run "$run_id" \
                 '{testResult:"PASS",testedBaseSha:$base,testedHeadSha:$head,testedResultTree:$tree,ciRunId:$run}' > "$RUNNER_TEMP/test-result.json"
               exit 0
@@ -227,7 +215,7 @@ jobs:
           retention-days: 1
 
   merge-ready-contract:
-    needs: [authorize, candidate-test, validate-test, ai-review]
+    needs: [authorize, validate-test, ai-review]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -237,9 +225,16 @@ jobs:
       # No checkout and no repository code, package installation, test, or AI runs here.
       - uses: actions/download-artifact@v4
         with:
-          pattern: '*-${{ github.run_id }}'
-          path: ${{ runner.temp }}/evidence
-          merge-multiple: true
+          name: authorized-input-${{ github.run_id }}
+          path: ${{ runner.temp }}/evidence/authorized
+      - uses: actions/download-artifact@v4
+        with:
+          name: validated-test-${{ github.run_id }}
+          path: ${{ runner.temp }}/evidence/test
+      - uses: actions/download-artifact@v4
+        with:
+          name: validated-review-${{ github.run_id }}
+          path: ${{ runner.temp }}/evidence/review
       - name: Validate evidence and create MERGE_READY
         env:
           HEAD_SHA: ${{ needs.authorize.outputs.head }}
@@ -247,10 +242,10 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/evidence"
-          jq -e --arg head "$HEAD_SHA" --arg base "$BASE_SHA" '.head==$head and .base==$base' binding.json >/dev/null
-          jq -e --arg head "$HEAD_SHA" --arg base "$BASE_SHA" '.testResult=="PASS" and .testedHeadSha==$head and .testedBaseSha==$base' test-result.json >/dev/null
-          jq -e --arg head "$HEAD_SHA" '.finalReview=="PASS" and .finalReviewSha==$head' review-result.json >/dev/null
-          jq -n -S --slurpfile b binding.json --slurpfile t test-result.json --slurpfile r review-result.json \
+          jq -e --arg head "$HEAD_SHA" --arg base "$BASE_SHA" '.head==$head and .base==$base' authorized/binding.json >/dev/null
+          jq -e --arg head "$HEAD_SHA" --arg base "$BASE_SHA" '.testResult=="PASS" and .testedHeadSha==$head and .testedBaseSha==$base' test/test-result.json >/dev/null
+          jq -e --arg head "$HEAD_SHA" '.finalReview=="PASS" and .finalReviewSha==$head' review/review-result.json >/dev/null
+          jq -n -S --slurpfile b authorized/binding.json --slurpfile t test/test-result.json --slurpfile r review/review-result.json \
             '$b[0] as $b | $t[0] as $t | $r[0] as $r |
              {version:2,candidate:$b.candidate,requirementsFingerprint:$b.fingerprint,pullRequest:$b.pr,
               headSha:$b.head,baseBranch:$b.baseBranch,baseSha:$b.base,

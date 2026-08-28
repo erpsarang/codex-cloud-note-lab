@@ -1,4 +1,5 @@
 name: CI
+run-name: prospective-merge-${{ inputs.contract_nonce || github.sha }}
 
 on:
   push:
@@ -37,7 +38,6 @@ jobs:
         env:
           BASE_SHA: ${{ inputs.tested_base_sha }}
           HEAD_SHA: ${{ inputs.tested_head_sha }}
-          CONTRACT_NONCE: ${{ inputs.contract_nonce }}
         run: |
           set -euo pipefail
           git cat-file -e "$BASE_SHA^{commit}"
@@ -46,21 +46,9 @@ jobs:
           git -c user.name=ci -c user.email=ci@example.invalid \
             merge --no-commit --no-ff "$HEAD_SHA"
           result_tree="$(git write-tree)"
-          jq -n -S --arg base "$BASE_SHA" --arg head "$HEAD_SHA" \
-            --arg tree "$result_tree" --arg nonce "$CONTRACT_NONCE" \
-            --argjson runId "$GITHUB_RUN_ID" \
-            '{version:1,testedBaseSha:$base,testedHeadSha:$head,
-              testedResultTree:$tree,contractNonce:$nonce,ciRunId:$runId}' \
-            > "$RUNNER_TEMP/prospective-merge.json"
-
-      - name: Upload prospective merge contract
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
-        with:
-          name: prospective-merge-${{ inputs.contract_nonce }}
-          path: ${{ runner.temp }}/prospective-merge.json
-          if-no-files-found: error
-          retention-days: 1
+          # The result tree is checked by the trusted caller independently. This
+          # untrusted execution workflow deliberately publishes no evidence artifact.
+          git write-tree | grep -Fx "$result_tree"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -68,7 +56,7 @@ jobs:
           node-version: 20
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run tests
         run: npm test
