@@ -29,6 +29,16 @@ test('fix attempts are reserved before push and keyed by both SHAs', async () =>
   assert.ok(reservation > 0 && reservation < push);
   assert.match(workflow, /self-improvement-fix-reservation:\$\{ATTEMPT\}:\$\{EXPECTED_SHA\}:\$\{NEW_SHA\}/);
   assert.match(workflow, /capture\("<!-- self-improvement-fix-reservation:/);
+  assert.match(workflow, /gh api --paginate --slurp[\s\S]*max \/\/ 0/);
+  assert.match(workflow, /\[\[ "\$attempt" =~ \^\[0-9\]\+\$ \]\]/);
+});
+
+test('structured reviews validate findings and cannot pass with P0 or P1', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  assert.match(workflow, /all\(\.findings\[\];[\s\S]*\.severity \| IN\("P0", "P1", "P2"\)/);
+  assert.match(workflow, /\.line \| type == "number" and \. >= 1 and floor == \./);
+  assert.match(workflow, /\.result == "pass" and any\(\.findings\[\]; \.severity == "P0" or \.severity == "P1"\)/);
+  assert.match(workflow, /then \.result = "hold"/);
 });
 
 test('Codex changes are snapshotted before dependency installation', async () => {
@@ -47,6 +57,18 @@ test('authorization and merge bind to repository branch and required contexts', 
   assert.match(workflow, /rules\/branches\/\$encoded_base/);
   assert.match(workflow, /all\(\$required\[\];/);
   assert.match(workflow, /생성되지 않았습니다/);
+  assert.doesNotMatch(workflow, /required_status_checks" 2>\/dev\/null \|\| echo/);
+  assert.match(workflow, /elif grep -q 'HTTP 404'/);
+  assert.match(workflow, /if ! branch_rules=.*gh api/);
+  assert.match(workflow, /repository ruleset 조회에 실패했습니다/);
+});
+
+test('ON_HOLD is recorded before optional label provisioning', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const hold = workflow.indexOf('gh pr comment "$PR_NUMBER"', workflow.indexOf('\n  on-hold:'));
+  const label = workflow.indexOf('gh label create needs-human-review', hold);
+  assert.ok(hold > 0 && label > hold);
+  assert.match(workflow.slice(hold, label + 300), /gh label create[\s\S]*--force \|\| true/);
 });
 
 test('generated code jobs never receive the publication credential', async () => {

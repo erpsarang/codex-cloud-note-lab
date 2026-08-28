@@ -57,8 +57,9 @@ jobs:
 
           # A trusted publication reservation is written before every push. Counting
           # reservations (including a push that failed) makes the limit fail closed.
-          attempt="$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" \
-            --jq '[.[] | (.body // "") | capture("<!-- self-improvement-fix-reservation:(?<n>[0-9]+):[0-9a-f]+:[0-9a-f]+ -->")? | .n // empty | tonumber] | max // 0')"
+          attempt="$(gh api --paginate --slurp "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" \
+            --jq '[.[][] | (.body // "") | capture("<!-- self-improvement-fix-reservation:(?<n>[0-9]+):[0-9a-f]+:[0-9a-f]+ -->")? | .n // empty | tonumber] | max // 0')"
+          [[ "$attempt" =~ ^[0-9]+$ ]] || { echo "반복 횟수 응답이 올바르지 않습니다." >&2; exit 1; }
           echo "authorized=true" >> "$GITHUB_OUTPUT"
           echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
@@ -123,7 +124,19 @@ jobs:
         run: |
           set -euo pipefail
           jq -e 'type == "object" and (.result | IN("pass", "fix", "hold")) and
-            (.summary | type == "string") and (.findings | type == "array")' review-result.json >/dev/null
+            (.summary | type == "string" and length > 0) and
+            (.findings | type == "array") and
+            all(.findings[];
+              type == "object" and
+              (.severity | IN("P0", "P1", "P2")) and
+              (.path | type == "string" and length > 0 and (contains("\n") | not)) and
+              (.line | type == "number" and . >= 1 and floor == .) and
+              (.message | type == "string" and length > 0))' review-result.json >/dev/null
+          # A pass with a blocking finding is internally inconsistent. Normalize it
+          # to hold so the terminal job records ON_HOLD rather than trusting it.
+          jq 'if .result == "pass" and any(.findings[]; .severity == "P0" or .severity == "P1")
+              then .result = "hold" else . end' review-result.json > review-result.validated.json
+          mv review-result.validated.json review-result.json
           {
             echo "result=$(jq -r .result review-result.json)"
             echo 'summary<<REVIEW_EOF'
@@ -310,8 +323,28 @@ jobs:
           # Resolve the rules that actually apply to the base branch. The first
           # endpoint covers classic branch protection; the second covers rulesets.
           encoded_base="$(jq -rn --arg value "$BASE_BRANCH" '$value | @uri')"
-          classic="$(gh api "repos/$GH_REPO/branches/$encoded_base/protection/required_status_checks" 2>/dev/null || echo '{}')"
-          branch_rules="$(gh api "repos/$GH_REPO/rules/branches/$encoded_base" 2>/dev/null || echo '[]')"
+          # The classic endpoint uses 404 to mean that required status checks are
+          # not configured. Every other error is fatal. The rules endpoint returns
+          # [] when no rules apply, so even its 404 must be treated as discovery
+          # failure (it can indicate missing Administration read permission).
+          classic_file="$(mktemp)"
+          classic_error="$(mktemp)"
+          if gh api "repos/$GH_REPO/branches/$encoded_base/protection/required_status_checks" \
+              >"$classic_file" 2>"$classic_error"; then
+            classic="$(cat "$classic_file")"
+          elif grep -q 'HTTP 404' "$classic_error"; then
+            classic='{}'
+          else
+            cat "$classic_error" >&2
+            echo "classic branch protection 조회에 실패했습니다." >&2
+            exit 1
+          fi
+          if ! branch_rules="$(gh api "repos/$GH_REPO/rules/branches/$encoded_base")"; then
+            echo "repository ruleset 조회에 실패했습니다." >&2
+            exit 1
+          fi
+          jq -e 'type == "object"' <<<"$classic" >/dev/null
+          jq -e 'type == "array"' <<<"$branch_rules" >/dev/null
           required="$(jq -cn --argjson classic "$classic" --argjson rules "$branch_rules" '
             ([($classic.checks // [])[] | {context, app_id: (.app_id // null)}] +
              [($classic.contexts // [])[] as $context |
@@ -374,5 +407,9 @@ jobs:
           reason="Review 결과 미확정 또는 심각한 문제가 발견되었습니다."
           [ "$POLICY" != false ] || reason="금지된 파일 변경 또는 자동화 정책 위반이 발견되었습니다."
           [ "$ATTEMPT" -lt "$MAX_FIX_ATTEMPTS" ] || reason="Review-Fix 최대 반복 횟수를 초과했습니다."
-          gh pr edit "$PR_NUMBER" --repo "$GH_REPO" --add-label needs-human-review
           gh pr comment "$PR_NUMBER" --repo "$GH_REPO" --body "**ON_HOLD** — $reason 자동 merge하지 않으며 사람의 확인이 필요합니다."
+          # The diagnostic is durable even if label administration is unavailable.
+          gh label create needs-human-review --repo "$GH_REPO" \
+            --description "자동화 중단 후 사람의 검토가 필요함" --color D93F0B --force || true
+          gh pr edit "$PR_NUMBER" --repo "$GH_REPO" --add-label needs-human-review || \
+            echo "needs-human-review label을 추가하지 못했지만 ON_HOLD 기록은 완료했습니다." >&2
