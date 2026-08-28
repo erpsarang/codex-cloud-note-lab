@@ -9,6 +9,8 @@ test('generated implementation PR carries a candidate marker and closing referen
   const workflow = await readWorkflow('approval-automation.yml');
   assert.match(workflow, /Closes #\$ISSUE_NUMBER/);
   assert.match(workflow, /self-improvement-candidate:\$ISSUE_NUMBER/);
+  assert.match(workflow, /needs\.implement\.outputs\.existing_branch[^\n]+!= "true"/);
+  assert.match(workflow, /trusted publication provenance를 확인할 수 없습니다/);
   assert.match(workflow, /persist-credentials: false/);
 });
 
@@ -104,6 +106,27 @@ test('structured reviews normalize P2 findings to fix and no findings to pass', 
   assert.match(validation, /then \.result = "fix"/);
   assert.match(validation, /else \.result = "pass" end/);
   assert.doesNotMatch(validation, /else \. end/);
+});
+
+test('structured reviews never overwrite an explicit hold with pass', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const validation = workflow.slice(workflow.indexOf('- name: 리뷰 결과 검증'), workflow.indexOf('- name: 구조화된 리뷰 결과 업로드'));
+  const explicitHold = validation.indexOf('if .result == "hold"');
+  const blockingFindings = validation.indexOf('elif any(.findings[]; .severity == "P0"');
+  const p2Findings = validation.indexOf('elif any(.findings[]; .severity == "P2"');
+  const noFindings = validation.indexOf('else .result = "pass"');
+  assert.ok(explicitHold > 0 && explicitHold < blockingFindings && blockingFindings < p2Findings && p2Findings < noFindings);
+});
+
+test('oversized PRs fail closed before the capped files API is trusted', async () => {
+  const workflow = await readWorkflow('review-fix-merge.yml');
+  const policy = workflow.slice(workflow.indexOf('\n  policy:'), workflow.indexOf('\n  review:'));
+  const limit = policy.indexOf('changed_files');
+  const files = policy.indexOf('pulls/$PR_NUMBER/files');
+  assert.match(workflow, /MAX_CHANGED_FILES: '100'/);
+  assert.ok(limit > 0 && limit < files);
+  assert.match(policy, /\[ "\$changed_files" -gt "\$MAX_CHANGED_FILES" \]/);
+  assert.match(policy, /echo "allowed=false" >> "\$GITHUB_OUTPUT"/);
 });
 
 test('Codex changes are snapshotted before dependency installation', async () => {

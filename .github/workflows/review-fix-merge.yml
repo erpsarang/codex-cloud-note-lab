@@ -16,6 +16,7 @@ permissions:
 
 env:
   MAX_FIX_ATTEMPTS: '3'
+  MAX_CHANGED_FILES: '100'
 
 jobs:
   authorize:
@@ -112,6 +113,13 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          changed_files="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.changed_files')"
+          [[ "$changed_files" =~ ^[0-9]+$ ]] || { echo "changed file 수를 확인할 수 없습니다." >&2; exit 1; }
+          if [ "$changed_files" -gt "$MAX_CHANGED_FILES" ]; then
+            echo "changed file 수가 안전 상한($MAX_CHANGED_FILES)을 초과했습니다."
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Inspect both sides of a rename. GitHub reports the protected source in
           # previous_filename and the destination in filename.
           files="$(gh api --paginate --slurp "repos/$GH_REPO/pulls/$PR_NUMBER/files?per_page=100" \
@@ -198,9 +206,11 @@ jobs:
               (.path | type == "string" and length > 0 and (contains("\n") | not)) and
               (.line | type == "number" and . >= 1 and floor == .) and
               (.message | type == "string" and length > 0))' review-result.json >/dev/null
-          # Derive the decision from validated findings instead of trusting an
-          # inconsistent top-level result from the model.
-          jq 'if any(.findings[]; .severity == "P0" or .severity == "P1")
+          # Preserve an explicit hold. Otherwise derive the safest decision from
+          # validated findings instead of trusting an inconsistent model result.
+          jq 'if .result == "hold"
+              then .result = "hold"
+              elif any(.findings[]; .severity == "P0" or .severity == "P1")
               then .result = "hold"
               elif any(.findings[]; .severity == "P2")
               then .result = "fix"

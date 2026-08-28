@@ -232,11 +232,22 @@ jobs:
           - \`npm test\`로 검증했습니다
 
           Closes #$ISSUE_NUMBER
+          이 pull request는 승인된 자기개선 후보에서 자동으로 생성되었습니다.
+          EOF
+
+          if [ "${{ needs.implement.outputs.existing_branch }}" != "true" ]; then
+            cat >> "$body_file" <<EOF
 
           <!-- self-improvement-candidate:$ISSUE_NUMBER -->
-          이 pull request는 승인된 자기개선 후보에서 자동으로 생성되었습니다.
           자동 Review-Fix-Review 정책과 모든 안전 조건을 통과한 경우에만 merge됩니다.
           EOF
+          else
+            cat >> "$body_file" <<EOF
+
+          기존 branch를 복구한 PR이므로 trusted publication provenance를 확인할 수 없습니다.
+          이 PR은 자동 Review-Fix-Merge 대상에서 제외됩니다.
+          EOF
+          fi
 
           gh pr create \
             --repo "$GH_REPO" \
