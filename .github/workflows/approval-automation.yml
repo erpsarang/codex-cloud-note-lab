@@ -217,6 +217,7 @@ jobs:
             push --no-verify --set-upstream origin "$IMPLEMENTATION_BRANCH"
 
       - name: Create implementation pull request
+        id: publication
         env:
           # This workflow-scoped token can publish the candidate but is not the
           # protected merge credential used by Trusted Merge.
@@ -246,9 +247,33 @@ jobs:
             --title "자기개선 후보 #$ISSUE_NUMBER 구현" \
             --body-file "$body_file")"
           pr_number="${pr_url##*/}"
+          published_head="$(gh api "repos/$GH_REPO/pulls/$pr_number" --jq .head.sha)"
+          requirements_fingerprint="$(gh api "repos/$GH_REPO/issues/$ISSUE_NUMBER" --jq .body | sha256sum | cut -d' ' -f1)"
+          jq -n -S --argjson candidate "$ISSUE_NUMBER" --arg fingerprint "$requirements_fingerprint" \
+            --arg head "$published_head" --arg workflow "$GITHUB_WORKFLOW_REF" \
+            --argjson runId "$GITHUB_RUN_ID" --argjson runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson pr "$pr_number" \
+            '{version:1,candidate:$candidate,requirementsFingerprint:$fingerprint,
+              publishedHeadSha:$head,publicationWorkflow:$workflow,
+              publicationRunId:$runId,publicationRunAttempt:$runAttempt,pullRequest:$pr}' \
+            > "$RUNNER_TEMP/publication-provenance.json"
+          printf 'pr_number=%s\n' "$pr_number" >> "$GITHUB_OUTPUT"
           # Events emitted with GITHUB_TOKEN do not start the Review/Fix flow.
-          # Review/Fix dispatches CI after constructing the exact prospective
-          # base/head merge contract, for both new candidates and later fixes.
+      - name: Upload immutable publication provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/publication-provenance.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Dispatch review for the trusted publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
           gh api --method POST "repos/$GH_REPO/dispatches" \
             -f event_type=self-improvement-review \
-            -F "client_payload[pr_number]=$pr_number"
+            -F "client_payload[pr_number]=${{ steps.publication.outputs.pr_number }}" \
+            -F "client_payload[publication_run_id]=$GITHUB_RUN_ID" \
+            -F "client_payload[publication_run_attempt]=$GITHUB_RUN_ATTEMPT"

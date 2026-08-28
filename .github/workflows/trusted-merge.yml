@@ -42,11 +42,12 @@ jobs:
         run: |
           set -euo pipefail
           test -f "$CONTRACT"
-          jq -e '.version == 1 and .finalReview == "PASS" and
+          jq -e '.version == 2 and .finalReview == "PASS" and
             .finalReviewSha == .headSha and .testResult == "PASS" and
             .testedBaseSha == .baseSha and .testedHeadSha == .headSha and
             (.testedResultTree | test("^[0-9a-f]{40}$")) and (.ciRunId > 0) and
             .ciContext == "test" and .ciResult == "success" and
+            (.publicationRunId > 0) and (.publicationRunAttempt > 0) and
             (.reviewFixAttempts >= 0 and .reviewFixAttempts <= 3)' "$CONTRACT" >/dev/null
 
           candidate="$(jq -r .candidate "$CONTRACT")"
@@ -55,6 +56,27 @@ jobs:
           expected_base="$(jq -r .baseSha "$CONTRACT")"
           ci_run_id="$(jq -r .ciRunId "$CONTRACT")"
           expected_fingerprint="$(jq -r .requirementsFingerprint "$CONTRACT")"
+          publication_run_id="$(jq -r .publicationRunId "$CONTRACT")"
+          publication_run_attempt="$(jq -r .publicationRunAttempt "$CONTRACT")"
+
+          # Independently re-read the immutable Approval Automation artifact;
+          # mutable PR names, titles, branches, and bodies grant no authority.
+          publication_run="$(gh api "repos/$GH_REPO/actions/runs/$publication_run_id")"
+          jq -e --arg workflow "$GITHUB_REPOSITORY/.github/workflows/approval-automation.yml@" \
+            --argjson attempt "$publication_run_attempt" \
+            '.event == "issues" and .conclusion == "success" and .run_attempt == $attempt and
+             (.path | startswith($workflow))' <<<"$publication_run" >/dev/null
+          publication_artifact="$(gh api "repos/$GH_REPO/actions/runs/$publication_run_id/artifacts" \
+            --jq '.artifacts[] | select(.name == "candidate-publication-'"$publication_run_id-$publication_run_attempt"'") | .id')"
+          test "$(wc -l <<<"$publication_artifact")" -eq 1
+          gh api "repos/$GH_REPO/actions/artifacts/$publication_artifact/zip" > "$RUNNER_TEMP/publication.zip"
+          unzip -p "$RUNNER_TEMP/publication.zip" publication-provenance.json > "$RUNNER_TEMP/publication.json"
+          jq -e --argjson candidate "$candidate" --argjson pr "$pr_number" \
+            --arg head "$expected_head" --arg fingerprint "$expected_fingerprint" \
+            --argjson run "$publication_run_id" --argjson attempt "$publication_run_attempt" \
+            '.candidate==$candidate and .pullRequest==$pr and .publishedHeadSha==$head and
+             .requirementsFingerprint==$fingerprint and .publicationRunId==$run and
+             .publicationRunAttempt==$attempt' "$RUNNER_TEMP/publication.json" >/dev/null
 
           issue="$(gh api "repos/$GH_REPO/issues/$candidate")"
           jq -e '.state == "open" and ([.labels[].name] | index("approved") != null)' <<<"$issue" >/dev/null
