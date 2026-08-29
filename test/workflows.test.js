@@ -33,7 +33,7 @@ test('recovery uses a trusted issues event and discovers the publication coordin
   assert.match(dispatcher, /index\("review-retry"\) != null/);
   assert.match(dispatcher, /codex\/self-improvement-\$CANDIDATE/);
   assert.match(dispatcher, /self-improvement-candidate:\$CANDIDATE/);
-  assert.match(dispatcher, /candidate-publication-\$run_id-\$run_attempt/);
+  assert.match(dispatcher, /candidate-publication-\$run_id-\$artifact_attempt/);
   assert.match(dispatcher, /\.publicationRunId == \$run/);
   assert.match(dispatcher, /\.publishedHeadSha == \$head/);
   assert.match(dispatcher, /\.requirementsFingerprint == \$fingerprint/);
@@ -55,6 +55,22 @@ test('no recovery workflow is branch-selectable or executes candidate code', asy
   assert.match(dispatcher, /issues: read/);
   assert.match(dispatcher, /pull-requests: read/);
   assert.match(dispatcher, /contents: write/);
+});
+
+test('recovery searches retained artifacts from every publication run attempt', async () => {
+  const dispatcher = await workflow('review-recovery-dispatch.yml');
+
+  assert.match(dispatcher, /actions\/runs\/\$run_id\/artifacts\?per_page=100/);
+  assert.match(dispatcher, /\.expired == false/);
+  assert.match(dispatcher, /artifact_attempt="\$\{artifact_name#candidate-publication-\$run_id-\}"/);
+  assert.match(dispatcher, /"candidate-publication-\$run_id-\$artifact_attempt"/);
+  assert.match(dispatcher, /--argjson attempt "\$artifact_attempt"/);
+  assert.match(dispatcher, /\.publicationRunAttempt == \$attempt/);
+  assert.match(dispatcher, /found="\$run_id:\$artifact_attempt"/);
+  assert.doesNotMatch(dispatcher, /artifact_name="candidate-publication-\$run_id-\$run_attempt"/);
+  assert.match(dispatcher, /Ambiguous publication provenance/);
+  assert.match(dispatcher, /No retained immutable publication artifact matches/);
+  assert.match(dispatcher, /artifact retention period; it is not bypassed/);
 });
 
 test('Review recovery preserves the read-only boundary and has no merge authority', async () => {

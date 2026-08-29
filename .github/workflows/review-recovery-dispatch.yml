@@ -67,7 +67,6 @@ jobs:
           found=''
           while IFS= read -r run; do
             run_id="$(jq -r .id <<<"$run")"
-            run_attempt="$(jq -r .run_attempt <<<"$run")"
             jq -e --argjson workflow_id "$workflow_id" \
               --arg path ".github/workflows/approval-automation.yml" \
               --arg branch "$DEFAULT_BRANCH" '
@@ -75,30 +74,37 @@ jobs:
               .path == $path and .head_branch == $branch and
               .status == "completed" and .conclusion == "success"
             ' <<<"$run" >/dev/null || continue
-            artifact_name="candidate-publication-$run_id-$run_attempt"
-            artifacts="$(gh api "repos/$GH_REPO/actions/runs/$run_id/artifacts")"
-            artifact_ids="$(jq -r --arg name "$artifact_name" '[.artifacts[] | select(.name == $name and .expired == false)] | if length == 1 then .[0].id else empty end' <<<"$artifacts")"
-            [ -n "$artifact_ids" ] || continue
-            rm -f "$RUNNER_TEMP/provenance.zip" "$RUNNER_TEMP/publication-provenance.json"
-            gh api "repos/$GH_REPO/actions/artifacts/$artifact_ids/zip" > "$RUNNER_TEMP/provenance.zip"
-            unzip -p "$RUNNER_TEMP/provenance.zip" publication-provenance.json > "$RUNNER_TEMP/publication-provenance.json" || continue
-            provenance="$(cat "$RUNNER_TEMP/publication-provenance.json")"
-            if jq -e --argjson candidate "$CANDIDATE" --argjson pr "$pr_number" \
-              --arg head "$published_head" --argjson run "$run_id" --argjson attempt "$run_attempt" \
-              --arg workflow "$GH_REPO/.github/workflows/approval-automation.yml@" \
-              --arg fingerprint "$requirements_fingerprint" \
-              --arg source_sha "$(jq -r .head_sha <<<"$run")" --arg source_branch "$DEFAULT_BRANCH" '
-              .version == 1 and .candidate == $candidate and .pullRequest == $pr and
-              .publishedHeadSha == $head and .publicationRunId == $run and
-              .publicationRunAttempt == $attempt and
-              .requirementsFingerprint == $fingerprint and
-              (.publicationWorkflow | startswith($workflow)) and
-              .publicationSourceSha == $source_sha and
-              .publicationSourceBranch == $source_branch
-            ' <<<"$provenance" >/dev/null; then
-              [ -z "$found" ] || { echo "Ambiguous publication provenance" >&2; exit 1; }
-              found="$run_id:$run_attempt"
-            fi
+            # A rerun can have no publication job while an earlier attempt from
+            # the same run still has the retained immutable artifact. Inspect
+            # every retained publication artifact rather than only run_attempt.
+            artifacts="$(gh api --paginate "repos/$GH_REPO/actions/runs/$run_id/artifacts?per_page=100" --slurp)"
+            while IFS=$'\t' read -r artifact_id artifact_name; do
+              [ -n "$artifact_id" ] || continue
+              artifact_attempt="${artifact_name#candidate-publication-$run_id-}"
+              case "$artifact_attempt" in ''|*[!0-9]*) continue;; esac
+              [ "$artifact_name" = "candidate-publication-$run_id-$artifact_attempt" ] || continue
+              rm -f "$RUNNER_TEMP/provenance.zip" "$RUNNER_TEMP/publication-provenance.json"
+              gh api "repos/$GH_REPO/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/provenance.zip"
+              unzip -p "$RUNNER_TEMP/provenance.zip" publication-provenance.json > "$RUNNER_TEMP/publication-provenance.json" || continue
+              provenance="$(cat "$RUNNER_TEMP/publication-provenance.json")"
+              if jq -e --argjson candidate "$CANDIDATE" --argjson pr "$pr_number" \
+                --arg head "$published_head" --argjson run "$run_id" --argjson attempt "$artifact_attempt" \
+                --arg workflow "$GH_REPO/.github/workflows/approval-automation.yml@" \
+                --arg fingerprint "$requirements_fingerprint" \
+                --arg source_sha "$(jq -r .head_sha <<<"$run")" --arg source_branch "$DEFAULT_BRANCH" '
+                .version == 1 and .candidate == $candidate and .pullRequest == $pr and
+                .publishedHeadSha == $head and .publicationRunId == $run and
+                .publicationRunAttempt == $attempt and
+                .requirementsFingerprint == $fingerprint and
+                (.publicationWorkflow | startswith($workflow)) and
+                .publicationSourceSha == $source_sha and
+                .publicationSourceBranch == $source_branch
+              ' <<<"$provenance" >/dev/null; then
+                [ -z "$found" ] || { echo "Ambiguous publication provenance" >&2; exit 1; }
+                found="$run_id:$artifact_attempt"
+              fi
+            done < <(jq -r --arg prefix "candidate-publication-$run_id-" \
+              '.[].artifacts[] | select(.expired == false and (.name | startswith($prefix))) | [.id, .name] | @tsv' <<<"$artifacts")
           done < <(jq -c '[.[].workflow_runs[]] | sort_by(.created_at) | reverse[]' <<<"$runs")
 
           [ -n "$found" ] || {
