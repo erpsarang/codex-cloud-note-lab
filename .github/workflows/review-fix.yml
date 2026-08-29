@@ -421,7 +421,8 @@ jobs:
           prompt: ${{ env.REVIEW_PROMPT }}
       - name: Fail closed when any review input is omitted
         if: env.REVIEW_INPUT_INCOMPLETE == 'true'
-        run: printf '%s\n' 'VERDICT: NON_PASS' > "$RUNNER_TEMP/final-review.md"
+        run: |
+          printf '%s\n' 'VERDICT: NON_PASS' > "$RUNNER_TEMP/final-review.md"
       - name: Validate and record review result
         env:
           HEAD_SHA: ${{ needs.authorize.outputs.head }}
