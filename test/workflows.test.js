@@ -155,8 +155,10 @@ test('Trusted Merge fails closed on stale evidence and requests one bounded reva
     trusted.indexOf('- name: Put a changed or unverifiable candidate ON_HOLD'),
   );
 
-  assert.match(stale, /current_base=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
-  assert.match(stale, /current_base=.*\n(?:.*\n){0,5} *pr=.*pulls\/\$pr_number/);
+  assert.match(stale, /for snapshot_attempt in 1 2 3; do/);
+  assert.match(stale, /base_before=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
+  assert.match(stale, /pr=.*pulls\/\$pr_number/);
+  assert.match(stale, /base_after=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
   assert.match(stale, /if \[ "\$current_base" != "\$expected_base" \]; then/);
   assert.match(stale, /\[ "\$stale_recovery_count" -eq 0 \]/);
   assert.match(stale, /\.head\.sha == \$head and \.base\.sha == \$base/);
@@ -169,17 +171,32 @@ test('Trusted Merge fails closed on stale evidence and requests one bounded reva
   assert.doesNotMatch(recovery, /SELF_IMPROVEMENT_MERGE_TOKEN|git push|pulls\/[^\n]+\/merge/);
 });
 
-test('Trusted Merge refreshes the PR after reading the current base', async () => {
+test('Trusted Merge obtains a bounded coherent default-branch and PR snapshot', async () => {
   const trusted = await workflow('trusted-merge.yml');
-  const currentBase = trusted.indexOf('current_base="$(gh api');
-  const refreshedPr = trusted.indexOf('pr="$(gh api "repos/$GH_REPO/pulls/$pr_number")"', currentBase);
-  const staleCheck = trusted.indexOf('if [ "$current_base" != "$expected_base" ]; then', currentBase);
+  const snapshot = trusted.indexOf('for snapshot_attempt in 1 2 3; do');
+  const baseBefore = trusted.indexOf('base_before="$(gh api', snapshot);
+  const refreshedPr = trusted.indexOf('pr="$(gh api "repos/$GH_REPO/pulls/$pr_number")"', baseBefore);
+  const baseAfter = trusted.indexOf('base_after="$(gh api', refreshedPr);
+  const staleCheck = trusted.indexOf('if [ "$current_base" != "$expected_base" ]; then', baseAfter);
 
-  assert.ok(currentBase >= 0);
-  assert.ok(refreshedPr > currentBase);
-  assert.ok(staleCheck > refreshedPr);
-  assert.match(trusted.slice(refreshedPr, staleCheck), /.head.sha == \$head/);
-  assert.match(trusted.slice(refreshedPr, staleCheck), /.base.ref == \$branch/);
+  assert.ok(snapshot >= 0);
+  assert.ok(baseBefore > snapshot);
+  assert.ok(refreshedPr > baseBefore);
+  assert.ok(baseAfter > refreshedPr);
+  assert.ok(staleCheck > baseAfter);
+  const coherent = trusted.slice(baseAfter, staleCheck);
+  assert.match(coherent, /\[ "\$base_before" = "\$base_after" \]/);
+  assert.match(coherent, /\.base\.sha == \$base/);
+  assert.match(coherent, /current_base="\$base_after"/);
+  assert.match(coherent, /\[ "\$snapshot_ready" = true \]/);
+});
+
+test('Trusted Merge treats legacy version-2 contracts as recovery count zero', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+
+  assert.match(trusted, /\(\.staleRecoveryCount \/\/ 0\) == 0/);
+  assert.match(trusted, /stale_recovery_count="\$\(jq -r '\(\.staleRecoveryCount \/\/ 0\)'/);
+  assert.match(trusted, /\[ "\$stale_recovery_count" -eq 0 \]/);
 });
 
 test('Trusted Merge handles a stale base before requiring resolved mergeability', async () => {
@@ -788,7 +805,8 @@ test('an existing unproven implementation branch fails closed', async () => {
 test('Trusted Merge detects a changed base after revalidating the CI run', async () => {
   const trusted = await workflow('trusted-merge.yml');
 
-  assert.match(trusted, /current_base=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
+  assert.match(trusted, /base_before=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
+  assert.match(trusted, /base_after=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
   assert.match(trusted, /if \[ "\$current_base" != "\$expected_base" \]; then/);
   assert.match(trusted, /actions\/runs\/\$ci_run_id/);
   assert.match(trusted, /\.head_sha == \$source/);
