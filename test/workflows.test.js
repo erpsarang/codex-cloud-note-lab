@@ -230,7 +230,7 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /requirements_cap = 32 \* 1024/);
   assert.match(ai, /def git_limited\(limit, \*args\)/);
   assert.match(ai, /source\.read\(requirements_cap \+ 1\)/);
-  assert.match(ai, /16 \* 1024, "diff"/);
+  assert.match(ai, /16 \* 1024, "--literal-pathspecs", "diff"/);
   assert.match(ai, /diff content for \{path!r\} exceeded 16384 bytes/);
   assert.match(ai, /--no-ext-diff.*--no-textconv.*--no-renames/s);
   assert.match(ai, /name_fields\[-1\] != b""/);
@@ -309,6 +309,61 @@ test('trusted prompt parses modified, added, deleted, multiple, binary, and empt
     assert.equal(empty.status, 0, empty.stderr);
     const emptyPrompt = await readFile(join(fixture, 'review-prompt.txt'), 'utf8');
     assert.doesNotMatch(emptyPrompt, /--- FILE /);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('trusted prompt treats every candidate filename as a literal diff path', async () => {
+  const review = await workflow('review-fix.yml');
+  const python = review.match(/          python3 - <<'PY'\n([\s\S]*?)\n          PY/)[1]
+    .split('\n').map((line) => line.slice(10)).join('\n');
+  const fixture = await mkdtemp(join(tmpdir(), 'review-literal-paths-'));
+  const candidate = join(fixture, 'candidate-source');
+  const trusted = join(fixture, 'trusted-review-input');
+  const run = (...args) => {
+    const result = spawnSync('git', args, { cwd: candidate, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const files = new Map([
+    ['regular.txt', 'LITERAL_REGULAR_CONTENT'],
+    [':leading.txt', 'LITERAL_COLON_CONTENT'],
+    [':(exclude)**', 'LITERAL_MAGIC_CONTENT'],
+    ['wild*card?.[txt', 'LITERAL_WILDCARD_CONTENT'],
+    ['companion.txt', 'LITERAL_COMPANION_CONTENT'],
+  ]);
+
+  try {
+    await mkdir(candidate);
+    await mkdir(trusted);
+    run('init', '-q');
+    run('config', 'user.name', 'Regression Test');
+    run('config', 'user.email', 'test@example.invalid');
+    await writeFile(join(candidate, 'baseline.txt'), 'baseline\n');
+    run('add', '.');
+    run('commit', '-qm', 'base');
+    const base = run('rev-parse', 'HEAD');
+    for (const [name, content] of files) {
+      await writeFile(join(candidate, name), `${content}\n`);
+    }
+    run('add', '-A');
+    run('commit', '-qm', 'literal candidate paths');
+    const head = run('rev-parse', 'HEAD');
+    await writeFile(join(trusted, 'candidate-requirements.md'), 'Review every file.\n');
+
+    const result = spawnSync('python3', ['-c', python], {
+      cwd: fixture,
+      encoding: 'utf8',
+      env: { ...process.env, BASE_SHA: base, HEAD_SHA: head, RUNNER_TEMP: fixture },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const prompt = await readFile(join(fixture, 'review-prompt.txt'), 'utf8');
+    for (const [name, content] of files) {
+      assert.ok(prompt.includes(`${name}'; change=A`), `missing metadata for ${name}`);
+      assert.match(prompt, new RegExp(`\\+${content}`));
+    }
+    assert.equal((prompt.match(/--- FILE /g) || []).length, files.size);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }

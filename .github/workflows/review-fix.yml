@@ -332,7 +332,7 @@ jobs:
                           f"base_bytes={size(base, path)}; head_bytes={size(head, path)}; "
                           f"binary={'yes' if binary else 'no'} ---\n")
               patch, file_truncated = (b"", False) if binary else git_limited(
-                  16 * 1024, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+                  16 * 1024, "--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
                   "--unified=80", base, head, "--", path,
               )
               candidate = metadata + text(patch)
