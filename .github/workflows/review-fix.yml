@@ -450,7 +450,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       actions: read
-      contents: read
+      # The workflow token can only emit the narrowly scoped handoff event. It
+      # is not the environment-protected credential used by Trusted Merge.
+      contents: write
     steps:
       # No checkout and no repository code, package installation, test, or AI runs here.
       - uses: actions/download-artifact@v4
@@ -484,9 +486,25 @@ jobs:
               ciWorkflowSourceSha:$t.ciWorkflowSourceSha,
               ciRunId:$t.ciRunId,testResult:$t.testResult,finalReview:$r.finalReview,
               finalReviewSha:$r.finalReviewSha,ciContext:"test",ciResult:"success"}' > merge-ready.json
+          jq --argjson run "$GITHUB_RUN_ID" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg source "$GITHUB_SHA" \
+            '. + {reviewRunId:$run,reviewRunAttempt:$attempt,reviewWorkflowSourceSha:$source}' \
+            merge-ready.json > merge-ready.with-review.json
+          mv merge-ready.with-review.json merge-ready.json
       - uses: actions/upload-artifact@v4
         with:
-          name: merge-ready-${{ needs.authorize.outputs.pr }}-${{ needs.authorize.outputs.head }}
+          name: merge-ready-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.authorize.outputs.pr }}-${{ needs.authorize.outputs.head }}
           path: ${{ runner.temp }}/evidence/merge-ready.json
           if-no-files-found: error
           retention-days: 1
+      - name: Request Trusted Merge for the immutable review run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$GH_REPO/dispatches" \
+            -f event_type=self-improvement-trusted-merge \
+            -F "client_payload[review_run_id]=$GITHUB_RUN_ID" \
+            -F "client_payload[review_run_attempt]=$GITHUB_RUN_ATTEMPT" \
+            -f "client_payload[review_workflow_source_sha]=$GITHUB_SHA"

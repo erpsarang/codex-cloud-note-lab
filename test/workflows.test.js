@@ -107,6 +107,43 @@ test('Review binds MERGE_READY to the successful merge CI run', async () => {
   assert.match(review, /ciWorkflowSourceSha:\$t\.ciWorkflowSourceSha/);
 });
 
+test('Review hands its immutable MERGE_READY run to Trusted Merge by repository dispatch', async () => {
+  const review = await workflow('review-fix.yml');
+  const contract = review.slice(review.indexOf('  merge-ready-contract:'));
+  const trusted = await workflow('trusted-merge.yml');
+
+  assert.doesNotMatch(trusted, /workflow_run:/);
+  assert.match(trusted, /repository_dispatch:\n    types: \[self-improvement-trusted-merge\]/);
+  assert.match(contract, /contents: write/);
+  assert.match(contract, /event_type=self-improvement-trusted-merge/);
+  assert.match(contract, /client_payload\[review_run_id\]=\$GITHUB_RUN_ID/);
+  assert.match(contract, /client_payload\[review_run_attempt\]=\$GITHUB_RUN_ATTEMPT/);
+  assert.match(contract, /client_payload\[review_workflow_source_sha\]=\$GITHUB_SHA/);
+  assert.match(contract, /reviewRunId:\$run,reviewRunAttempt:\$attempt,reviewWorkflowSourceSha:\$source/);
+  assert.match(contract, /name: merge-ready-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ needs\.authorize\.outputs\.pr \}\}-\$\{\{ needs\.authorize\.outputs\.head \}\}/);
+  assert.doesNotMatch(review, /SELF_IMPROVEMENT_MERGE_TOKEN/);
+});
+
+test('Trusted Merge re-authenticates the dispatched Review run and exact artifact', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+
+  assert.match(trusted, /actions\/runs\/\$REVIEW_RUN_ID\/attempts\/\$REVIEW_RUN_ATTEMPT/);
+  assert.doesNotMatch(trusted, /actions\/runs\/\$REVIEW_RUN_ID"/);
+  assert.match(trusted, /\.name == "Self-Improvement Review"/);
+  assert.match(trusted, /\.path == "\.github\/workflows\/review-fix\.yml"/);
+  assert.match(trusted, /\.event == "repository_dispatch"/);
+  assert.match(trusted, /\.conclusion == "success"/);
+  assert.match(trusted, /\.run_attempt == \$review_attempt/);
+  assert.match(trusted, /\.head_sha == \$sha and \.head_branch == \$branch/);
+  assert.match(trusted, /actions\/runs\/\$REVIEW_RUN_ID\/artifacts\?per_page=100/);
+  assert.match(trusted, /artifact_pattern="\^merge-ready-\$REVIEW_RUN_ID-\$REVIEW_RUN_ATTEMPT-\[0-9\]\+-\[0-9a-f\]\{40\}\$"/);
+  assert.match(trusted, /\.name \| test\(\$pattern\)/);
+  assert.match(trusted, /length == 1 then \.\[0\]\.id else empty/);
+  assert.doesNotMatch(trusted, /test\("\^merge-ready-\[0-9\]\+-\[0-9a-f\]\{40\}\$"\)/);
+  assert.match(trusted, /\.reviewRunId == \$run and \.reviewRunAttempt == \$attempt/);
+  assert.match(trusted, /\.reviewWorkflowSourceSha == \$source/);
+});
+
 test('Review accepts only the exact CI run created by its trusted dispatch', async () => {
   const ci = await workflow('ci.yml');
   const review = await workflow('review-fix.yml');

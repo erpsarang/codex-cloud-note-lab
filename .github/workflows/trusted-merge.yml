@@ -1,9 +1,8 @@
 name: Trusted Merge
 
 on:
-  workflow_run:
-    workflows: [Self-Improvement Review]
-    types: [completed]
+  repository_dispatch:
+    types: [self-improvement-trusted-merge]
 
 permissions:
   actions: read
@@ -12,26 +11,60 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: trusted-merge-${{ github.event.workflow_run.id }}
+  group: trusted-merge-${{ github.event.client_payload.review_run_id }}-${{ github.event.client_payload.review_run_attempt }}
   cancel-in-progress: false
 
 jobs:
   merge:
-    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: self-improvement-trusted-merge
     steps:
       # No checkout, package installation, repository script, or AI action is
-      # permitted in this workflow. The artifact is bound to the completed run.
-      - name: Download MERGE_READY from the completed review run
-        uses: actions/download-artifact@v4
-        with:
-          pattern: merge-ready-*
-          path: ${{ runner.temp }}/ready
-          merge-multiple: true
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ github.token }}
+      # permitted in this workflow. Treat the dispatch payload only as lookup
+      # coordinates, then authenticate the exact completed Review run and its
+      # single retained contract artifact through the Actions API.
+      - name: Authenticate Review run and download its exact MERGE_READY artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REVIEW_RUN_ID: ${{ github.event.client_payload.review_run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.event.client_payload.review_run_attempt }}
+          REVIEW_WORKFLOW_SOURCE_SHA: ${{ github.event.client_payload.review_workflow_source_sha }}
+        run: |
+          set -euo pipefail
+          case "$REVIEW_RUN_ID" in ''|*[!0-9]*) exit 1;; esac
+          case "$REVIEW_RUN_ATTEMPT" in ''|*[!0-9]*) exit 1;; esac
+          [[ "$REVIEW_WORKFLOW_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+          for attempt in $(seq 1 30); do
+            review_run="$(gh api "repos/$GH_REPO/actions/runs/$REVIEW_RUN_ID/attempts/$REVIEW_RUN_ATTEMPT")"
+            status="$(jq -r .status <<<"$review_run")"
+            [ "$status" != completed ] || break
+            sleep 2
+          done
+          jq -e --argjson review_attempt "$REVIEW_RUN_ATTEMPT" \
+            --arg sha "$REVIEW_WORKFLOW_SOURCE_SHA" --arg branch "$DEFAULT_BRANCH" '
+            .name == "Self-Improvement Review" and
+            .path == ".github/workflows/review-fix.yml" and
+            .event == "repository_dispatch" and .status == "completed" and
+            .conclusion == "success" and .run_attempt == $review_attempt and
+            .head_sha == $sha and .head_branch == $branch
+          ' <<<"$review_run" >/dev/null
+
+          artifacts="$(gh api --paginate "repos/$GH_REPO/actions/runs/$REVIEW_RUN_ID/artifacts?per_page=100" --slurp)"
+          artifact_pattern="^merge-ready-$REVIEW_RUN_ID-$REVIEW_RUN_ATTEMPT-[0-9]+-[0-9a-f]{40}$"
+          artifact_id="$(jq -r --arg pattern "$artifact_pattern" '
+            [.[].artifacts[] |
+             select(.expired == false and (.name | test($pattern)))] |
+            if length == 1 then .[0].id else empty end
+          ' <<<"$artifacts")"
+          test -n "$artifact_id"
+          mkdir -p "$RUNNER_TEMP/ready"
+          gh api "repos/$GH_REPO/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/merge-ready.zip"
+          test "$(unzip -Z1 "$RUNNER_TEMP/merge-ready.zip" | grep -Fx 'merge-ready.json' | wc -l)" -eq 1
+          unzip -p "$RUNNER_TEMP/merge-ready.zip" merge-ready.json > "$RUNNER_TEMP/ready/merge-ready.json"
 
       - name: Validate trusted state and merge exact head
         env:
@@ -39,6 +72,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           CONTRACT: ${{ runner.temp }}/ready/merge-ready.json
+          REVIEW_RUN_ID: ${{ github.event.client_payload.review_run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ github.event.client_payload.review_run_attempt }}
+          REVIEW_WORKFLOW_SOURCE_SHA: ${{ github.event.client_payload.review_workflow_source_sha }}
         run: |
           set -euo pipefail
           test -f "$CONTRACT"
@@ -47,9 +83,16 @@ jobs:
             .testedBaseSha == .baseSha and .testedHeadSha == .headSha and
             (.testedResultTree | test("^[0-9a-f]{40}$")) and
             (.ciWorkflowSourceSha | test("^[0-9a-f]{40}$")) and (.ciRunId > 0) and
+            (.reviewWorkflowSourceSha | test("^[0-9a-f]{40}$")) and
+            (.reviewRunId > 0) and (.reviewRunAttempt > 0) and
             .ciContext == "test" and .ciResult == "success" and
             (.publicationRunId > 0) and (.publicationRunAttempt > 0) and
             (has("reviewFixAttempts") | not)' "$CONTRACT" >/dev/null
+          jq -e --argjson run "$REVIEW_RUN_ID" --argjson attempt "$REVIEW_RUN_ATTEMPT" \
+            --arg source "$REVIEW_WORKFLOW_SOURCE_SHA" '
+            .reviewRunId == $run and .reviewRunAttempt == $attempt and
+            .reviewWorkflowSourceSha == $source
+          ' "$CONTRACT" >/dev/null
 
           candidate="$(jq -r .candidate "$CONTRACT")"
           pr_number="$(jq -r .pullRequest "$CONTRACT")"
