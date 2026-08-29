@@ -78,7 +78,7 @@ test('Review recovery preserves the read-only boundary and has no merge authorit
 
   assert.match(review, /permissions: \{\}/);
   assert.match(review, /allow-bot-users: github-actions\[bot\]/);
-  assert.match(review, /permission-profile: "read-only"/);
+  assert.match(review, /permission-profile: ":read-only"/);
   assert.doesNotMatch(review, /allow-bots: true/);
   assert.doesNotMatch(review, /SELF_IMPROVEMENT_MERGE_TOKEN|pulls\/[^\n]+\/merge|gh pr merge|git push/);
 });
@@ -99,8 +99,9 @@ test('Review binds MERGE_READY to the successful merge CI run', async () => {
 
   assert.match(review, /git merge-tree --write-tree "\$BASE_SHA" "\$HEAD_SHA"/);
   assert.match(review, /-f tested_base_sha="\$BASE_SHA" -f tested_head_sha="\$HEAD_SHA"/);
-  assert.match(review, /testedResultTree:\$tree,ciRunId:\$run/);
+  assert.match(review, /ciWorkflowSourceSha:\$source,ciRunId:\$run/);
   assert.match(review, /testedBaseSha:\$t\.testedBaseSha,testedHeadSha:\$t\.testedHeadSha,testedResultTree:\$t\.testedResultTree/);
+  assert.match(review, /ciWorkflowSourceSha:\$t\.ciWorkflowSourceSha/);
 });
 
 test('Review accepts only the exact CI run created by its trusted dispatch', async () => {
@@ -116,6 +117,28 @@ test('Review accepts only the exact CI run created by its trusted dispatch', asy
   assert.match(review, /\.triggering_actor\.login == \$actor and \.triggering_actor\.id == \$actor_id/);
   assert.match(review, /\.created_at >= \$since/);
   assert.doesNotMatch(review, /if length == 1 then \.\[0\] else empty end/);
+});
+
+test('recovery learns nested CI source from the nonce-matched run without a ref pre-read race', async () => {
+  const review = await workflow('review-fix.yml');
+  const validation = review.slice(review.indexOf('  validate-test:'), review.indexOf('  ai-review:'));
+
+  assert.doesNotMatch(validation, /git\/ref\/heads\/\$BASE_BRANCH|dispatch_ref_sha/);
+  assert.match(validation, /\(\.head_sha \| test\("\^\[0-9a-f\]\{40\}\$"\)\)/);
+  assert.match(validation, /ci_workflow_source_sha="\$\(jq -r \.head_sha <<<"\$run"\)"/);
+  assert.match(validation, /ciWorkflowSourceSha:\$source/);
+  assert.doesNotMatch(validation, /\.head_sha == \$base/);
+
+  // The historical base/head remain immutable workflow inputs authenticated by
+  // the exact run title and one-time nonce even when the dispatch ref has moved.
+  assert.match(validation, /title="prospective-merge-\$BASE_SHA-\$HEAD_SHA-\$nonce"/);
+  assert.match(validation, /-f tested_base_sha="\$BASE_SHA" -f tested_head_sha="\$HEAD_SHA" -f contract_nonce="\$nonce"/);
+  assert.match(validation, /\.event == "workflow_dispatch" and \.workflow_id == \$workflow_id and \.path == \$path/);
+  assert.match(validation, /\.display_title == \$title and \.head_branch == \$branch/);
+  assert.match(validation, /\.run_attempt == 1 and \.created_at >= \$since/);
+  assert.match(validation, /\.actor\.login == \$actor and \.actor\.id == \$actor_id/);
+  assert.match(validation, /\.triggering_actor\.login == \$actor and \.triggering_actor\.id == \$actor_id/);
+  assert.match(validation, /Ambiguous CI dispatch provenance/);
 });
 
 test('repository dispatch CI provenance remains bound to the outer trusted actor', async () => {
@@ -245,7 +268,9 @@ test('Trusted Merge rejects a changed base and revalidates the CI run', async ()
   assert.match(trusted, /current_base=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
   assert.match(trusted, /\[ "\$current_base" = "\$expected_base" \]/);
   assert.match(trusted, /actions\/runs\/\$ci_run_id/);
-  assert.match(trusted, /workflow_dispatch\\tsuccess/);
+  assert.match(trusted, /\.head_sha == \$source/);
+  assert.doesNotMatch(trusted, /\.head_sha == \$expected_base/);
+  assert.match(trusted, /\.path == "\.github\/workflows\/ci\.yml"/);
 });
 
 test('Trusted Merge atomically binds the tested base, head, and result tree', async () => {
