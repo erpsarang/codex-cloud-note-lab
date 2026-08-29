@@ -262,7 +262,7 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /boundary = "REVIEW_DATA_" \+ secrets\.token_hex\(32\)/);
   assert.match(ai, /boundary not in diff_payload and boundary not in requirements_payload/);
   assert.match(ai, /if: env\.REVIEW_INPUT_INCOMPLETE != 'true'\n\s+uses: openai\/codex-action@v1/);
-  assert.match(ai, /if: env\.REVIEW_INPUT_INCOMPLETE == 'true'\n\s+run: printf '%s\\n' 'VERDICT: NON_PASS'/);
+  assert.match(ai, /if: env\.REVIEW_INPUT_INCOMPLETE == 'true'\n\s+run: \|\n\s+printf '%s\\n' 'VERDICT: NON_PASS'/);
   const action = ai.slice(ai.indexOf('uses: openai/codex-action@v1'));
   assert.doesNotMatch(action, /candidate\.diff|candidate-requirements\.md|working-directory:/);
 });
