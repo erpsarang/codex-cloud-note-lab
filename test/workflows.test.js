@@ -156,6 +156,7 @@ test('Trusted Merge fails closed on stale evidence and requests one bounded reva
   );
 
   assert.match(stale, /current_base=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
+  assert.match(stale, /current_base=.*\n(?:.*\n){0,5} *pr=.*pulls\/\$pr_number/);
   assert.match(stale, /if \[ "\$current_base" != "\$expected_base" \]; then/);
   assert.match(stale, /\[ "\$stale_recovery_count" -eq 0 \]/);
   assert.match(stale, /\.head\.sha == \$head and \.base\.sha == \$base/);
@@ -166,6 +167,19 @@ test('Trusted Merge fails closed on stale evidence and requests one bounded reva
   assert.match(recovery, /client_payload\[stale_recovery_base_sha\]=\$CURRENT_BASE/);
   assert.match(recovery, /client_payload\[stale_recovery_head_sha\]=\$HEAD_SHA/);
   assert.doesNotMatch(recovery, /SELF_IMPROVEMENT_MERGE_TOKEN|git push|pulls\/[^\n]+\/merge/);
+});
+
+test('Trusted Merge refreshes the PR after reading the current base', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+  const currentBase = trusted.indexOf('current_base="$(gh api');
+  const refreshedPr = trusted.indexOf('pr="$(gh api "repos/$GH_REPO/pulls/$pr_number")"', currentBase);
+  const staleCheck = trusted.indexOf('if [ "$current_base" != "$expected_base" ]; then', currentBase);
+
+  assert.ok(currentBase >= 0);
+  assert.ok(refreshedPr > currentBase);
+  assert.ok(staleCheck > refreshedPr);
+  assert.match(trusted.slice(refreshedPr, staleCheck), /.head.sha == \$head/);
+  assert.match(trusted.slice(refreshedPr, staleCheck), /.base.ref == \$branch/);
 });
 
 test('Trusted Merge handles a stale base before requiring resolved mergeability', async () => {
@@ -210,6 +224,23 @@ test('bounded stale recovery puts the candidate ON_HOLD when its base advances a
   assert.match(authorize, /gh label create ON_HOLD[^\n]*--repo "\$GH_REPO"/);
   assert.match(authorize, /gh issue edit "\$candidate"[^\n]*--add-label ON_HOLD/);
   assert.match(authorize, /exit 1/);
+});
+
+test('every failed bounded recovery run puts its immutable candidate ON_HOLD', async () => {
+  const review = await workflow('review-fix.yml');
+  const hold = review.slice(review.indexOf('  hold-failed-stale-recovery:'));
+
+  assert.match(hold, /needs: \[authorize, validate-test, ai-review, merge-ready-contract\]/);
+  assert.match(hold, /if: \$\{\{ always\(\).*stale_recovery_count == 1/);
+  for (const job of ['authorize', 'validate-test', 'ai-review', 'merge-ready-contract']) {
+    assert.match(hold, new RegExp(`needs\\.${job.replace('-', '\\-')}\\.result != 'success'`));
+  }
+  assert.match(hold, /actions: read\n      issues: write/);
+  assert.match(hold, /candidate-publication-\$PUBLICATION_RUN_ID-\$PUBLICATION_RUN_ATTEMPT/);
+  assert.match(hold, /\.pullRequest == \$pr and \.publicationRunId == \$run/);
+  assert.match(hold, /gh label create ON_HOLD[^\n]*--repo "\$GH_REPO"/);
+  assert.match(hold, /gh issue edit "\$candidate"[^\n]*--add-label ON_HOLD/);
+  assert.doesNotMatch(hold, /SELF_IMPROVEMENT_MERGE_TOKEN|contents: write|git push|gh pr merge/);
 });
 
 test('fresh Trusted Merge path retains atomic compare-and-swap publication', async () => {

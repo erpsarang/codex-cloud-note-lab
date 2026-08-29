@@ -159,6 +159,13 @@ jobs:
           # be requested for the unchanged candidate head and current base. If
           # that replacement also goes stale, fail closed instead of looping.
           current_base="$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)"
+          # Refresh the PR after reading the mutable branch ref. The earlier PR
+          # response may describe the branch before it advanced, so it must not
+          # be compared with this newer default-branch SHA.
+          pr="$(gh api "repos/$GH_REPO/pulls/$pr_number")"
+          jq -e --arg head "$expected_head" --arg branch "$DEFAULT_BRANCH" \
+            '.state == "open" and .draft == false and .head.sha == $head and
+             .base.ref == $branch' <<<"$pr" >/dev/null
           if [ "$current_base" != "$expected_base" ]; then
             [ "$stale_recovery_count" -eq 0 ]
             jq -e --arg head "$expected_head" --arg base "$current_base" --arg branch "$DEFAULT_BRANCH" \

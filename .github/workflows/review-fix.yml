@@ -536,3 +536,49 @@ jobs:
             -F "client_payload[review_run_id]=$GITHUB_RUN_ID" \
             -F "client_payload[review_run_attempt]=$GITHUB_RUN_ATTEMPT" \
             -f "client_payload[review_workflow_source_sha]=$GITHUB_SHA"
+
+  hold-failed-stale-recovery:
+    needs: [authorize, validate-test, ai-review, merge-ready-contract]
+    if: ${{ always() && github.event.client_payload.stale_recovery_count == 1 && (needs.authorize.result != 'success' || needs.validate-test.result != 'success' || needs.ai-review.result != 'success' || needs.merge-ready-contract.result != 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - name: Put every failed bounded recovery ON_HOLD
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ env.REVIEW_PR_NUMBER }}
+          PUBLICATION_RUN_ID: ${{ env.REVIEW_PUBLICATION_RUN_ID }}
+          PUBLICATION_RUN_ATTEMPT: ${{ env.REVIEW_PUBLICATION_RUN_ATTEMPT }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER:$PUBLICATION_RUN_ID:$PUBLICATION_RUN_ATTEMPT" in
+            *[!0-9:]*|:*|*::*|*:) exit 1;;
+          esac
+
+          # Recover the candidate only from the exact immutable publication
+          # artifact. Dispatch payloads and mutable PR metadata do not choose
+          # which issue receives this privileged state transition.
+          artifacts="$(gh api --paginate "repos/$GH_REPO/actions/runs/$PUBLICATION_RUN_ID/artifacts?per_page=100" --slurp)"
+          artifact_name="candidate-publication-$PUBLICATION_RUN_ID-$PUBLICATION_RUN_ATTEMPT"
+          artifact_id="$(jq -r --arg name "$artifact_name" '
+            [.[].artifacts[] | select(.name == $name and .expired == false)] |
+            if length == 1 then .[0].id else empty end
+          ' <<<"$artifacts")"
+          test -n "$artifact_id"
+          gh api "repos/$GH_REPO/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/publication.zip"
+          test "$(unzip -Z1 "$RUNNER_TEMP/publication.zip" | grep -Fx 'publication-provenance.json' | wc -l)" -eq 1
+          unzip -p "$RUNNER_TEMP/publication.zip" publication-provenance.json > "$RUNNER_TEMP/publication.json"
+
+          jq -e --argjson pr "$PR_NUMBER" --argjson run "$PUBLICATION_RUN_ID" \
+            --argjson attempt "$PUBLICATION_RUN_ATTEMPT" '
+            .version == 1 and .pullRequest == $pr and .publicationRunId == $run and
+            .publicationRunAttempt == $attempt and (.candidate | type == "number" and . > 0)
+          ' "$RUNNER_TEMP/publication.json" >/dev/null
+          candidate="$(jq -r .candidate "$RUNNER_TEMP/publication.json")"
+          gh label create ON_HOLD --repo "$GH_REPO" --color B60205 \
+            --description 'Automated merge is paused pending investigation' --force
+          gh issue edit "$candidate" --repo "$GH_REPO" --add-label ON_HOLD
