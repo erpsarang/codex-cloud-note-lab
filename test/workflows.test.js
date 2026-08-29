@@ -217,7 +217,7 @@ test('candidate execution, AI review, and contract creation use separate workflo
   assert.doesNotMatch(contract, /actions\/checkout|openai\/codex-action|npm (?:ci|install|test)/);
 });
 
-test('AI action runs from a clean trusted directory without the candidate checkout', async () => {
+test('trusted runner embeds review files in the prompt and removes them before AI review', async () => {
   const review = await workflow('review-fix.yml');
   const ai = review.slice(review.indexOf('  ai-review:'), review.indexOf('  merge-ready-contract:'));
 
@@ -225,9 +225,15 @@ test('AI action runs from a clean trusted directory without the candidate checko
   assert.match(ai, /git -C candidate-source[^\n]+diff --binary/);
   assert.match(ai, /rm -rf candidate-source/);
   assert.match(ai, /test ! -e candidate-source/);
-  assert.match(ai, /working-directory: \$\{\{ github\.workspace \}\}\/trusted-review-input/);
-  assert.match(ai, /Review only candidate\.diff and candidate-requirements\.md/);
-  assert.doesNotMatch(ai, /working-directory:.*candidate-source/);
+  assert.match(ai, /cat trusted-review-input\/candidate\.diff >> "\$RUNNER_TEMP\/review-prompt\.txt"/);
+  assert.match(ai, /cat trusted-review-input\/candidate-requirements\.md >> "\$RUNNER_TEMP\/review-prompt\.txt"/);
+  assert.match(ai, /prompt<<%s/);
+  assert.match(ai, /rm -rf trusted-review-input/);
+  assert.match(ai, /test ! -e trusted-review-input/);
+  assert.match(ai, /test ! -e "\$RUNNER_TEMP\/review-prompt\.txt"/);
+  assert.match(ai, /prompt: \$\{\{ steps\.review-prompt\.outputs\.prompt \}\}/);
+  const action = ai.slice(ai.indexOf('uses: openai/codex-action@v1'));
+  assert.doesNotMatch(action, /candidate\.diff|candidate-requirements\.md|working-directory:/);
 });
 
 test('AI review allows only the GitHub Actions bot actor', async () => {
@@ -288,8 +294,8 @@ test('AI stage is review-only and exposes no automated fix contract', async () =
   const review = await workflow('review-fix.yml');
   const trusted = await workflow('trusted-merge.yml');
 
-  assert.match(review, /review-only: do not propose or apply an automated fix/);
-  assert.match(review, /VERDICT: PASS or VERDICT: NON_PASS/);
+  assert.match(review, /This is review-only:\n\s+do not propose or apply an automated fix/);
+  assert.match(review, /VERDICT: PASS\n\s+VERDICT: NON_PASS/);
   assert.doesNotMatch(review, /reviewFixAttempts/);
   assert.doesNotMatch(trusted, /\.reviewFixAttempts/);
 });
