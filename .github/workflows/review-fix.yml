@@ -152,10 +152,19 @@ jobs:
           HEAD_SHA: ${{ needs.authorize.outputs.head }}
           BASE_BRANCH: ${{ needs.authorize.outputs.base_branch }}
           RESULT_TREE: ${{ steps.merge.outputs.tree }}
+          REVIEW_EVENT_NAME: ${{ github.event_name }}
           EXPECTED_ACTOR: ${{ github.actor }}
           EXPECTED_ACTOR_ID: ${{ github.actor_id }}
         run: |
           set -euo pipefail
+          # repository_dispatch retains its existing binding to the outer actor.
+          # For manual recovery, github.token performs the nested dispatch, so
+          # bind the run to the token's authenticated identity instead of the
+          # human who initiated the outer workflow_dispatch run.
+          if [ "$REVIEW_EVENT_NAME" = workflow_dispatch ]; then
+            EXPECTED_ACTOR='github-actions[bot]'
+            EXPECTED_ACTOR_ID=41898282
+          fi
           nonce="$(openssl rand -hex 32)"
           # run-name is evaluated from the immutable workflow on BASE_BRANCH, so
           # this exact title authenticates all three workflow_dispatch inputs.

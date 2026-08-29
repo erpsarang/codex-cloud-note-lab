@@ -70,6 +70,27 @@ test('Review accepts only the exact CI run created by its trusted dispatch', asy
   assert.doesNotMatch(review, /if length == 1 then \.\[0\] else empty end/);
 });
 
+test('repository dispatch CI provenance remains bound to the outer trusted actor', async () => {
+  const review = await workflow('review-fix.yml');
+  const validation = review.slice(review.indexOf('  validate-test:'), review.indexOf('  ai-review:'));
+
+  assert.match(validation, /EXPECTED_ACTOR: \$\{\{ github\.actor \}\}/);
+  assert.match(validation, /EXPECTED_ACTOR_ID: \$\{\{ github\.actor_id \}\}/);
+  assert.match(validation, /if \[ "\$REVIEW_EVENT_NAME" = workflow_dispatch \]; then/);
+  assert.match(validation, /\.actor\.login == \$actor and \.actor\.id == \$actor_id/);
+  assert.match(validation, /\.triggering_actor\.login == \$actor and \.triggering_actor\.id == \$actor_id/);
+});
+
+test('manual recovery binds nested CI provenance to the GitHub Actions token identity', async () => {
+  const review = await workflow('review-fix.yml');
+  const validation = review.slice(review.indexOf('  validate-test:'), review.indexOf('  ai-review:'));
+
+  assert.match(validation, /REVIEW_EVENT_NAME: \$\{\{ github\.event_name \}\}/);
+  assert.match(validation, /EXPECTED_ACTOR='github-actions\[bot\]'/);
+  assert.match(validation, /EXPECTED_ACTOR_ID=41898282/);
+  assert.doesNotMatch(validation, /gh api user/);
+});
+
 test('publication provenance is immutable and authorizes the exact current head', async () => {
   const publication = await workflow('approval-automation.yml');
   const review = await workflow('review-fix.yml');
