@@ -78,7 +78,7 @@ test('Review recovery preserves the read-only boundary and has no merge authorit
 
   assert.match(review, /permissions: \{\}/);
   assert.match(review, /allow-bot-users: github-actions\[bot\]/);
-  assert.match(review, /permission-profile: "read-only"/);
+  assert.match(review, /permission-profile: ":read-only"/);
   assert.doesNotMatch(review, /allow-bots: true/);
   assert.doesNotMatch(review, /SELF_IMPROVEMENT_MERGE_TOKEN|pulls\/[^\n]+\/merge|gh pr merge|git push/);
 });
@@ -116,6 +116,28 @@ test('Review accepts only the exact CI run created by its trusted dispatch', asy
   assert.match(review, /\.triggering_actor\.login == \$actor and \.triggering_actor\.id == \$actor_id/);
   assert.match(review, /\.created_at >= \$since/);
   assert.doesNotMatch(review, /if length == 1 then \.\[0\] else empty end/);
+});
+
+test('recovery binds nested CI to the dispatched branch tip, not the historical tested base', async () => {
+  const review = await workflow('review-fix.yml');
+  const validation = review.slice(review.indexOf('  validate-test:'), review.indexOf('  ai-review:'));
+
+  assert.match(validation, /dispatch_ref_sha="\$\(gh api "repos\/\$GH_REPO\/git\/ref\/heads\/\$BASE_BRANCH" --jq \.object\.sha\)"/);
+  assert.match(validation, /\[\[ "\$dispatch_ref_sha" =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
+  assert.match(validation, /--arg dispatch_ref_sha "\$dispatch_ref_sha"/);
+  assert.match(validation, /\.head_branch == \$branch and \.head_sha == \$dispatch_ref_sha/);
+  assert.doesNotMatch(validation, /\.head_sha == \$base/);
+
+  // The historical base/head remain immutable workflow inputs authenticated by
+  // the exact run title and one-time nonce even when the dispatch ref has moved.
+  assert.match(validation, /title="prospective-merge-\$BASE_SHA-\$HEAD_SHA-\$nonce"/);
+  assert.match(validation, /-f tested_base_sha="\$BASE_SHA" -f tested_head_sha="\$HEAD_SHA" -f contract_nonce="\$nonce"/);
+  assert.match(validation, /\.event == "workflow_dispatch" and \.workflow_id == \$workflow_id and \.path == \$path/);
+  assert.match(validation, /\.display_title == \$title and \.head_branch == \$branch/);
+  assert.match(validation, /\.run_attempt == 1 and \.created_at >= \$since/);
+  assert.match(validation, /\.actor\.login == \$actor and \.actor\.id == \$actor_id/);
+  assert.match(validation, /\.triggering_actor\.login == \$actor and \.triggering_actor\.id == \$actor_id/);
+  assert.match(validation, /Ambiguous CI dispatch provenance/);
 });
 
 test('repository dispatch CI provenance remains bound to the outer trusted actor', async () => {

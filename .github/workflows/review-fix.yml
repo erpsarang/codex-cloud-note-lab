@@ -152,6 +152,13 @@ jobs:
           workflow="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml")"
           workflow_id="$(jq -r .id <<<"$workflow")"
           test "$workflow_id" != null
+          # workflow_dispatch resolves BASE_BRANCH at its current trusted tip. In a
+          # recovery, that tip can legitimately differ from historical BASE_SHA.
+          # Capture the ref immediately before dispatch and bind the resulting run
+          # to that trusted workflow source SHA instead of weakening the immutable
+          # tested base/head input binding carried by the title and nonce.
+          dispatch_ref_sha="$(gh api "repos/$GH_REPO/git/ref/heads/$BASE_BRANCH" --jq .object.sha)"
+          [[ "$dispatch_ref_sha" =~ ^[0-9a-f]{40}$ ]]
           dispatch_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run ci.yml --repo "$GH_REPO" --ref "$BASE_BRANCH" -f tested_base_sha="$BASE_SHA" -f tested_head_sha="$HEAD_SHA" -f contract_nonce="$nonce"
           for attempt in $(seq 1 30); do
@@ -165,11 +172,11 @@ jobs:
               # Re-read the exact run rather than trusting the mutable list result.
               run="$(gh api "repos/$GH_REPO/actions/runs/$run_id")"
               jq -e --arg title "$title" --arg path ".github/workflows/ci.yml" \
-                --argjson workflow_id "$workflow_id" --arg base "$BASE_SHA" --arg head "$HEAD_SHA" \
+                --argjson workflow_id "$workflow_id" --arg dispatch_ref_sha "$dispatch_ref_sha" \
                 --arg nonce "$nonce" --arg branch "$BASE_BRANCH" --arg since "$dispatch_started_at" \
                 --arg actor "$EXPECTED_ACTOR" --argjson actor_id "$EXPECTED_ACTOR_ID" '
                 .event == "workflow_dispatch" and .workflow_id == $workflow_id and .path == $path and
-                .display_title == $title and .head_branch == $branch and .head_sha == $base and
+                .display_title == $title and .head_branch == $branch and .head_sha == $dispatch_ref_sha and
                 .run_attempt == 1 and .created_at >= $since and
                 .actor.login == $actor and .actor.id == $actor_id and
                 .triggering_actor.login == $actor and .triggering_actor.id == $actor_id' \
@@ -228,7 +235,7 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           allow-bot-users: github-actions[bot]
-          permission-profile: "read-only"
+          permission-profile: ":read-only"
           working-directory: ${{ github.workspace }}/trusted-review-input
           output-file: ${{ runner.temp }}/final-review.md
           prompt: |
