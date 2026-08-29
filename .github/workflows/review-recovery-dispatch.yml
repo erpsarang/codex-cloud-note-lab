@@ -87,16 +87,17 @@ jobs:
               gh api "repos/$GH_REPO/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/provenance.zip"
               unzip -p "$RUNNER_TEMP/provenance.zip" publication-provenance.json > "$RUNNER_TEMP/publication-provenance.json" || continue
               provenance="$(cat "$RUNNER_TEMP/publication-provenance.json")"
+              expected_workflow="$GH_REPO/.github/workflows/approval-automation.yml@refs/heads/$DEFAULT_BRANCH"
               if jq -e --argjson candidate "$CANDIDATE" --argjson pr "$pr_number" \
                 --arg head "$published_head" --argjson run "$run_id" --argjson attempt "$artifact_attempt" \
-                --arg workflow "$GH_REPO/.github/workflows/approval-automation.yml@" \
+                --arg workflow "$expected_workflow" \
                 --arg fingerprint "$requirements_fingerprint" \
                 --arg source_sha "$(jq -r .head_sha <<<"$run")" --arg source_branch "$DEFAULT_BRANCH" '
                 .version == 1 and .candidate == $candidate and .pullRequest == $pr and
                 .publishedHeadSha == $head and .publicationRunId == $run and
                 .publicationRunAttempt == $attempt and
                 .requirementsFingerprint == $fingerprint and
-                (.publicationWorkflow | startswith($workflow)) and
+                .publicationWorkflow == $workflow and
                 .publicationSourceSha == $source_sha and
                 .publicationSourceBranch == $source_branch
               ' <<<"$provenance" >/dev/null; then

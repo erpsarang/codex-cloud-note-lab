@@ -160,6 +160,27 @@ test('recovered publication attempts remain authoritative downstream after a rer
   assert.match(trusted, /actions\/runs\/\$publication_run_id\/artifacts\?per_page=100/);
 });
 
+test('publication workflow authority requires the exact full branch ref', async () => {
+  const review = await workflow('review-fix.yml');
+  const recovery = await workflow('review-recovery-dispatch.yml');
+  const trusted = await workflow('trusted-merge.yml');
+  const repository = 'owner/repository';
+  const branch = 'main';
+  const expected = `${repository}/.github/workflows/approval-automation.yml@refs/heads/${branch}`;
+
+  assert.equal(expected, 'owner/repository/.github/workflows/approval-automation.yml@refs/heads/main');
+  assert.notEqual(expected, 'owner/repository/.github/workflows/approval-automation.yml@main');
+  assert.notEqual(expected, 'owner/repository/.github/workflows/approval-automation.yml@refs/heads/release');
+
+  assert.match(review, /expected_workflow="\$GITHUB_REPOSITORY\/.github\/workflows\/approval-automation\.yml@refs\/heads\/\$source_branch"/);
+  assert.match(recovery, /expected_workflow="\$GH_REPO\/.github\/workflows\/approval-automation\.yml@refs\/heads\/\$DEFAULT_BRANCH"/);
+  assert.match(trusted, /expected_publication_workflow="\$GH_REPO\/.github\/workflows\/approval-automation\.yml@refs\/heads\/\$publication_source_branch"/);
+  for (const contents of [review, recovery, trusted]) {
+    assert.match(contents, /\.publicationWorkflow ?== ?\$workflow/);
+    assert.doesNotMatch(contents, /publicationWorkflow[^\n]*starts(?:with|With)|publicationWorkflow[^\n]*contains/);
+  }
+});
+
 test('candidate execution, AI review, and contract creation use separate workflow or jobs', async () => {
   const ci = await workflow('ci.yml');
   const review = await workflow('review-fix.yml');
