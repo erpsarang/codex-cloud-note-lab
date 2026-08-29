@@ -217,21 +217,34 @@ test('candidate execution, AI review, and contract creation use separate workflo
   assert.doesNotMatch(contract, /actions\/checkout|openai\/codex-action|npm (?:ci|install|test)/);
 });
 
-test('trusted runner embeds review files in the prompt and removes them before AI review', async () => {
+test('trusted runner caps and embeds review data, then removes it before AI review', async () => {
   const review = await workflow('review-fix.yml');
   const ai = review.slice(review.indexOf('  ai-review:'), review.indexOf('  merge-ready-contract:'));
 
   assert.match(ai, /path: candidate-source/);
-  assert.match(ai, /git -C candidate-source[^\n]+diff --binary/);
+  assert.doesNotMatch(ai, /diff --binary|candidate\.diff/);
+  assert.match(ai, /prompt_cap = 60 \* 1024/);
+  assert.match(ai, /requirements_cap = 32 \* 1024/);
+  assert.match(ai, /def git_limited\(limit, \*args\)/);
+  assert.match(ai, /source\.read\(requirements_cap \+ 1\)/);
+  assert.match(ai, /16 \* 1024, "diff"/);
+  assert.match(ai, /diff content for \{path!r\} exceeded 16384 bytes/);
+  assert.match(ai, /--no-ext-diff.*--no-textconv.*--no-renames/s);
+  assert.match(ai, /binary=\{'yes' if binary else 'no'\}/);
+  assert.match(ai, /patch, file_truncated = \(b"", False\) if binary else git_limited/);
+  assert.match(ai, /\[TRUNCATED: text diff exceeded the deterministic 61440-byte prompt cap/);
+  assert.match(ai, /Omitted \{len\(omitted\)\} file\(s\)/);
+  assert.match(ai, /If truncation\n\s+prevents a meaningful review, fail closed/);
   assert.match(ai, /rm -rf candidate-source/);
   assert.match(ai, /test ! -e candidate-source/);
-  assert.match(ai, /cat trusted-review-input\/candidate\.diff >> "\$RUNNER_TEMP\/review-prompt\.txt"/);
-  assert.match(ai, /cat trusted-review-input\/candidate-requirements\.md >> "\$RUNNER_TEMP\/review-prompt\.txt"/);
-  assert.match(ai, /prompt<<%s/);
+  assert.match(ai, /open\("trusted-review-input\/candidate-requirements\.md", "rb"\)/);
+  assert.match(ai, /REVIEW_PROMPT<<%s/);
+  assert.match(ai, />> "\$GITHUB_ENV"/);
+  assert.doesNotMatch(ai, /GITHUB_OUTPUT/);
   assert.match(ai, /rm -rf trusted-review-input/);
   assert.match(ai, /test ! -e trusted-review-input/);
   assert.match(ai, /test ! -e "\$RUNNER_TEMP\/review-prompt\.txt"/);
-  assert.match(ai, /prompt: \$\{\{ steps\.review-prompt\.outputs\.prompt \}\}/);
+  assert.match(ai, /prompt: \$\{\{ env\.REVIEW_PROMPT \}\}/);
   const action = ai.slice(ai.indexOf('uses: openai/codex-action@v1'));
   assert.doesNotMatch(action, /candidate\.diff|candidate-requirements\.md|working-directory:/);
 });
