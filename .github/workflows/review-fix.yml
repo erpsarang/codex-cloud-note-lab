@@ -12,6 +12,9 @@ env:
   REVIEW_PR_NUMBER: ${{ github.event.client_payload.pr_number }}
   REVIEW_PUBLICATION_RUN_ID: ${{ github.event.client_payload.publication_run_id }}
   REVIEW_PUBLICATION_RUN_ATTEMPT: ${{ github.event.client_payload.publication_run_attempt }}
+  REVIEW_RECOVERY_COUNT: ${{ github.event.client_payload.stale_recovery_count || '0' }}
+  REVIEW_RECOVERY_BASE_SHA: ${{ github.event.client_payload.stale_recovery_base_sha || '' }}
+  REVIEW_RECOVERY_HEAD_SHA: ${{ github.event.client_payload.stale_recovery_head_sha || '' }}
 
 concurrency:
   group: review-${{ github.event.client_payload.pr_number }}
@@ -35,6 +38,7 @@ jobs:
       pr: ${{ steps.bind.outputs.pr }}
       publication_run_id: ${{ steps.bind.outputs.publication_run_id }}
       publication_run_attempt: ${{ steps.bind.outputs.publication_run_attempt }}
+      stale_recovery_count: ${{ steps.bind.outputs.stale_recovery_count }}
     steps:
       - name: Download provenance from the named publication run
         env:
@@ -65,6 +69,9 @@ jobs:
           PR_NUMBER: ${{ env.REVIEW_PR_NUMBER }}
           PUBLICATION_RUN_ID: ${{ env.REVIEW_PUBLICATION_RUN_ID }}
           PUBLICATION_RUN_ATTEMPT: ${{ env.REVIEW_PUBLICATION_RUN_ATTEMPT }}
+          STALE_RECOVERY_COUNT: ${{ env.REVIEW_RECOVERY_COUNT }}
+          STALE_RECOVERY_BASE_SHA: ${{ env.REVIEW_RECOVERY_BASE_SHA }}
+          STALE_RECOVERY_HEAD_SHA: ${{ env.REVIEW_RECOVERY_HEAD_SHA }}
         run: |
           set -euo pipefail
           provenance="$(cat "$RUNNER_TEMP/provenance.json")"
@@ -85,6 +92,17 @@ jobs:
           published_head="$(jq -r .publishedHeadSha <<<"$provenance")"
           pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
           jq -e --arg head "$published_head" '.state == "open" and .head.sha == $head' <<<"$pr" >/dev/null
+          case "$STALE_RECOVERY_COUNT" in
+            0) ;;
+            1)
+              [[ "$STALE_RECOVERY_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+              [[ "$STALE_RECOVERY_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+              jq -e --arg base "$STALE_RECOVERY_BASE_SHA" --arg head "$STALE_RECOVERY_HEAD_SHA" \
+                '.base.sha == $base and .head.sha == $head' <<<"$pr" >/dev/null
+              [ "$published_head" = "$STALE_RECOVERY_HEAD_SHA" ]
+              ;;
+            *) exit 1 ;;
+          esac
           issue="$(gh api "repos/$GH_REPO/issues/$candidate")"
           jq -e '.state == "open" and ([.labels[].name] | index("approved") != null)' <<<"$issue" >/dev/null
           jq -r .body <<<"$issue" > "$RUNNER_TEMP/candidate-requirements.md"
@@ -94,12 +112,14 @@ jobs:
             --arg head "$published_head" --arg base "$(jq -r .base.sha <<<"$pr")" \
             --arg baseBranch "$(jq -r .base.ref <<<"$pr")" --argjson pr "$PR_NUMBER" \
             --argjson publicationRunId "$PUBLICATION_RUN_ID" --argjson publicationRunAttempt "$PUBLICATION_RUN_ATTEMPT" \
+            --argjson staleRecoveryCount "$STALE_RECOVERY_COUNT" \
             '{candidate:$candidate,fingerprint:$fingerprint,head:$head,base:$base,
               baseBranch:$baseBranch,pr:$pr,publicationRunId:$publicationRunId,
-              publicationRunAttempt:$publicationRunAttempt}' > "$RUNNER_TEMP/binding.json"
-          printf 'candidate=%s\nfingerprint=%s\nhead=%s\nbase=%s\nbase_branch=%s\npr=%s\npublication_run_id=%s\npublication_run_attempt=%s\n' \
+              publicationRunAttempt:$publicationRunAttempt,staleRecoveryCount:$staleRecoveryCount}' > "$RUNNER_TEMP/binding.json"
+          printf 'candidate=%s\nfingerprint=%s\nhead=%s\nbase=%s\nbase_branch=%s\npr=%s\npublication_run_id=%s\npublication_run_attempt=%s\nstale_recovery_count=%s\n' \
             "$candidate" "$fingerprint" "$published_head" "$(jq -r .base.sha <<<"$pr")" \
-            "$(jq -r .base.ref <<<"$pr")" "$PR_NUMBER" "$PUBLICATION_RUN_ID" "$PUBLICATION_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+            "$(jq -r .base.ref <<<"$pr")" "$PR_NUMBER" "$PUBLICATION_RUN_ID" "$PUBLICATION_RUN_ATTEMPT" \
+            "$STALE_RECOVERY_COUNT" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -482,6 +502,7 @@ jobs:
              {version:2,candidate:$b.candidate,requirementsFingerprint:$b.fingerprint,pullRequest:$b.pr,
               headSha:$b.head,baseBranch:$b.baseBranch,baseSha:$b.base,
               publicationRunId:$b.publicationRunId,publicationRunAttempt:$b.publicationRunAttempt,
+              staleRecoveryCount:$b.staleRecoveryCount,
               testedBaseSha:$t.testedBaseSha,testedHeadSha:$t.testedHeadSha,testedResultTree:$t.testedResultTree,
               ciWorkflowSourceSha:$t.ciWorkflowSourceSha,
               ciRunId:$t.ciRunId,testResult:$t.testResult,finalReview:$r.finalReview,

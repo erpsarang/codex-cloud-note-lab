@@ -144,6 +144,62 @@ test('Trusted Merge re-authenticates the dispatched Review run and exact artifac
   assert.match(trusted, /\.reviewWorkflowSourceSha == \$source/);
 });
 
+test('Trusted Merge fails closed on stale evidence and requests one bounded revalidation', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+  const stale = trusted.slice(
+    trusted.indexOf('# Never merge evidence tested against a stale base.'),
+    trusted.indexOf('# Build a commit with the exact tested result tree'),
+  );
+  const recovery = trusted.slice(
+    trusted.indexOf('- name: Request one current-base revalidation'),
+    trusted.indexOf('- name: Put a changed or unverifiable candidate ON_HOLD'),
+  );
+
+  assert.match(stale, /current_base=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
+  assert.match(stale, /if \[ "\$current_base" != "\$expected_base" \]; then/);
+  assert.match(stale, /\[ "\$stale_recovery_count" -eq 0 \]/);
+  assert.match(stale, /\.head\.sha == \$head and \.base\.sha == \$base/);
+  assert.match(stale, /exit 0/);
+  assert.doesNotMatch(stale, /git push|commit-tree/);
+  assert.equal((recovery.match(/event_type=self-improvement-review/g) || []).length, 1);
+  assert.match(recovery, /client_payload\[stale_recovery_count\]=1/);
+  assert.match(recovery, /client_payload\[stale_recovery_base_sha\]=\$CURRENT_BASE/);
+  assert.match(recovery, /client_payload\[stale_recovery_head_sha\]=\$HEAD_SHA/);
+  assert.doesNotMatch(recovery, /SELF_IMPROVEMENT_MERGE_TOKEN|git push|pulls\/[^\n]+\/merge/);
+});
+
+test('revalidated Review binds the current base and exact candidate head into new evidence', async () => {
+  const review = await workflow('review-fix.yml');
+  const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
+  const contract = review.slice(review.indexOf('  merge-ready-contract:'));
+
+  assert.match(authorize, /case "\$STALE_RECOVERY_COUNT" in/);
+  assert.match(authorize, /\.base\.sha == \$base and \.head\.sha == \$head/);
+  assert.match(authorize, /\[ "\$published_head" = "\$STALE_RECOVERY_HEAD_SHA" \]/);
+  assert.match(authorize, /staleRecoveryCount:\$staleRecoveryCount/);
+  assert.match(contract, /staleRecoveryCount:\$b\.staleRecoveryCount/);
+  assert.match(contract, /testedBaseSha:\$t\.testedBaseSha,testedHeadSha:\$t\.testedHeadSha/);
+  assert.match(contract, /finalReviewSha:\$r\.finalReviewSha/);
+});
+
+test('fresh Trusted Merge path retains atomic compare-and-swap publication', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+
+  assert.match(trusted, /echo 'stale=false' >> "\$GITHUB_OUTPUT"/);
+  assert.match(trusted, /actual_tree=.*merge-tree --write-tree "\$expected_base" "\$expected_head"/);
+  assert.match(trusted, /\[ "\$actual_tree" = "\$expected_tree" \]/);
+  assert.match(trusted, /--force-with-lease="refs\/heads\/\$DEFAULT_BRANCH:\$expected_base"/);
+});
+
+test('Trusted Merge creates ON_HOLD before applying it', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+  const hold = trusted.slice(trusted.indexOf('- name: Put a changed or unverifiable candidate ON_HOLD'));
+
+  assert.match(hold, /gh label create ON_HOLD[^\n]*--repo "\$GH_REPO"/);
+  assert.match(hold, /--description 'Automated merge is paused pending investigation' --force/);
+  assert.match(hold, /gh issue edit "\$candidate"[^\n]*--add-label ON_HOLD/);
+});
+
 test('Review accepts only the exact CI run created by its trusted dispatch', async () => {
   const ci = await workflow('ci.yml');
   const review = await workflow('review-fix.yml');
@@ -668,11 +724,11 @@ test('an existing unproven implementation branch fails closed', async () => {
   assert.doesNotMatch(publication, /missing pull request will be recovered/);
 });
 
-test('Trusted Merge rejects a changed base and revalidates the CI run', async () => {
+test('Trusted Merge detects a changed base after revalidating the CI run', async () => {
   const trusted = await workflow('trusted-merge.yml');
 
   assert.match(trusted, /current_base=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
-  assert.match(trusted, /\[ "\$current_base" = "\$expected_base" \]/);
+  assert.match(trusted, /if \[ "\$current_base" != "\$expected_base" \]; then/);
   assert.match(trusted, /actions\/runs\/\$ci_run_id/);
   assert.match(trusted, /\.head_sha == \$source/);
   assert.doesNotMatch(trusted, /\.head_sha == \$expected_base/);
