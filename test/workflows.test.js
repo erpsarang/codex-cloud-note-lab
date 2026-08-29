@@ -161,7 +161,8 @@ test('Trusted Merge fails closed on stale evidence and requests one bounded reva
   assert.match(stale, /base_after=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
   assert.match(stale, /if \[ "\$current_base" != "\$expected_base" \]; then/);
   assert.match(stale, /\[ "\$stale_recovery_count" -eq 0 \]/);
-  assert.match(stale, /\.head\.sha == \$head and \.base\.sha == \$base/);
+  assert.match(stale, /\.draft == false and \.head\.sha == \$head/);
+  assert.doesNotMatch(stale.slice(0, stale.indexOf("echo 'stale=false'")), /\.base\.sha == \$base/);
   assert.match(stale, /exit 0/);
   assert.doesNotMatch(stale, /git push|commit-tree/);
   assert.equal((recovery.match(/event_type=self-improvement-review/g) || []).length, 1);
@@ -186,9 +187,25 @@ test('Trusted Merge obtains a bounded coherent default-branch and PR snapshot', 
   assert.ok(staleCheck > baseAfter);
   const coherent = trusted.slice(baseAfter, staleCheck);
   assert.match(coherent, /\[ "\$base_before" = "\$base_after" \]/);
-  assert.match(coherent, /\.base\.sha == \$base/);
+  assert.doesNotMatch(coherent, /\.base\.sha/);
   assert.match(coherent, /current_base="\$base_after"/);
   assert.match(coherent, /\[ "\$snapshot_ready" = true \]/);
+});
+
+test('Trusted Merge recovers an old PR when its base.sha trails the current branch ref', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+  const snapshot = trusted.slice(
+    trusted.indexOf('for snapshot_attempt in 1 2 3; do'),
+    trusted.indexOf("echo 'stale=false'"),
+  );
+
+  // A long-lived PR may retain expected_base in base.sha after the branch ref
+  // advances. Recovery must be selected solely by current_base vs expected_base.
+  assert.match(snapshot, /if \[ "\$base_before" = "\$base_after" \]; then/);
+  assert.match(snapshot, /if \[ "\$current_base" != "\$expected_base" \]; then/);
+  assert.match(snapshot, /\.state == "open" and \.draft == false and \.head\.sha == \$head/);
+  assert.match(snapshot, /\.base\.ref == \$branch/);
+  assert.doesNotMatch(snapshot, /\.base\.sha/);
 });
 
 test('Trusted Merge treats legacy version-2 contracts as recovery count zero', async () => {
