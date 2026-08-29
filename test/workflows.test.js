@@ -22,17 +22,39 @@ test('automatic Review accepts only the existing repository dispatch payload', a
   assert.match(authorize, /\[ "\$actual" = "\$fingerprint" \]/);
 });
 
-test('manual recovery uses a secretless dispatcher into the trusted Review event', async () => {
+test('recovery uses a trusted issues event and discovers the publication coordinates', async () => {
   const dispatcher = await workflow('review-recovery-dispatch.yml');
 
-  assert.match(dispatcher, /workflow_dispatch:\n    inputs:/);
-  for (const input of ['pr_number', 'publication_run_id', 'publication_run_attempt']) {
-    assert.match(dispatcher, new RegExp(`      ${input}:\\n(?:        [^\\n]+\\n)*        required: true`));
-    assert.match(dispatcher, new RegExp(`client_payload\\[${input}\\]`));
-  }
+  assert.match(dispatcher, /issues:\n    types: \[labeled\]/);
+  assert.match(dispatcher, /github\.event\.label\.name == 'review-retry'/);
+  assert.match(dispatcher, /EVENT_LABEL: \$\{\{ github\.event\.label\.name \}\}/);
+  assert.match(dispatcher, /\.state == "open"/);
+  assert.match(dispatcher, /index\("approved"\) != null/);
+  assert.match(dispatcher, /index\("review-retry"\) != null/);
+  assert.match(dispatcher, /codex\/self-improvement-\$CANDIDATE/);
+  assert.match(dispatcher, /self-improvement-candidate:\$CANDIDATE/);
+  assert.match(dispatcher, /candidate-publication-\$run_id-\$run_attempt/);
+  assert.match(dispatcher, /\.publicationRunId == \$run/);
+  assert.match(dispatcher, /\.publishedHeadSha == \$head/);
+  assert.match(dispatcher, /\.requirementsFingerprint == \$fingerprint/);
+  assert.match(dispatcher, /current_pr=.*pulls\/\$pr_number/);
   assert.match(dispatcher, /event_type=self-improvement-review/);
-  assert.match(dispatcher, /permissions:\n  contents: write/);
+  assert.match(dispatcher, /permissions:\n      actions: read\n      contents: write\n      issues: read\n      pull-requests: read/);
   assert.doesNotMatch(dispatcher, /actions\/checkout|OPENAI_API_KEY|secrets\.|SELF_IMPROVEMENT_MERGE_TOKEN|pulls\/[^\n]+\/merge|gh pr merge|git push/);
+});
+
+test('no recovery workflow is branch-selectable or executes candidate code', async () => {
+  const dispatcher = await workflow('review-recovery-dispatch.yml');
+  const review = await workflow('review-fix.yml');
+
+  assert.doesNotMatch(dispatcher, /workflow_dispatch:/);
+  assert.doesNotMatch(review, /workflow_dispatch:/);
+  assert.doesNotMatch(dispatcher, /actions\/checkout|npm (?:ci|install|test)|openai\/codex-action/);
+  assert.doesNotMatch(dispatcher, /secrets\.|OPENAI_API_KEY|MERGE_TOKEN/);
+  assert.match(dispatcher, /actions: read/);
+  assert.match(dispatcher, /issues: read/);
+  assert.match(dispatcher, /pull-requests: read/);
+  assert.match(dispatcher, /contents: write/);
 });
 
 test('Review recovery preserves the read-only boundary and has no merge authority', async () => {

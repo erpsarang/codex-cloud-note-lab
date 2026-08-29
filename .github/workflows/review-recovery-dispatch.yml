@@ -1,45 +1,120 @@
-name: Self-Improvement Review Recovery Dispatcher
+name: Self-Improvement Review Recovery
 
 on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Existing pull request number to re-review
-        required: true
-        type: string
-      publication_run_id:
-        description: Approval Automation publication run ID
-        required: true
-        type: string
-      publication_run_attempt:
-        description: Approval Automation publication run attempt
-        required: true
-        type: string
+  issues:
+    types: [labeled]
 
-# This secretless workflow can request a recovery, but it cannot review or merge.
-# repository_dispatch always loads the Review workflow from the default branch.
-permissions:
-  contents: write
+# `issues` workflows are loaded only from the default branch. Adding review-retry
+# to an existing Candidate is therefore the human recovery request and cannot
+# select a branch-controlled workflow definition.
+permissions: {}
+
+concurrency:
+  group: review-recovery-${{ github.event.issue.number }}
+  cancel-in-progress: false
 
 jobs:
-  dispatch:
+  recover:
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'review-retry' &&
+      github.event.sender.type == 'User'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+      issues: read
+      pull-requests: read
     steps:
-      - name: Request trusted default-branch review
+      - name: Validate immutable publication and request trusted review
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-          PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
-          PUBLICATION_RUN_ATTEMPT: ${{ inputs.publication_run_attempt }}
+          CANDIDATE: ${{ github.event.issue.number }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          for value in "$PR_NUMBER" "$PUBLICATION_RUN_ID" "$PUBLICATION_RUN_ATTEMPT"; do
-            case "$value" in ''|*[!0-9]*) exit 1;; esac
-          done
+          [ "$EVENT_ACTION" = labeled ]
+          [ "$EVENT_LABEL" = review-retry ]
+          case "$CANDIDATE" in ''|*[!0-9]*) exit 1;; esac
+
+          issue="$(gh api "repos/$GH_REPO/issues/$CANDIDATE")"
+          jq -e '
+            .state == "open" and
+            (.title == "Self-Improvement Candidate | 자기개선 후보" or
+             .title == "Self-Improvement Candidate") and
+            (.body | contains("<!-- self-improvement-trigger-pr:")) and
+            ([.labels[].name] | index("approved") != null) and
+            ([.labels[].name] | index("review-retry") != null)
+          ' <<<"$issue" >/dev/null
+          requirements_fingerprint="$(jq -r .body <<<"$issue" | sha256sum | cut -d' ' -f1)"
+
+          implementation_branch="codex/self-improvement-$CANDIDATE"
+          prs="$(gh api --paginate "repos/$GH_REPO/pulls?state=open&head=${GH_REPO%%/*}:$implementation_branch&per_page=100" --slurp)"
+          pr_matches="$(jq -c --arg branch "$implementation_branch" --arg marker "<!-- self-improvement-candidate:$CANDIDATE -->" \
+            '[.[].[] | select(.head.ref == $branch and .head.repo.full_name == .base.repo.full_name and (.body | contains($marker)))]' <<<"$prs")"
+          [ "$(jq 'length' <<<"$pr_matches")" -eq 1 ]
+          pr="$(jq -c '.[0]' <<<"$pr_matches")"
+          pr_number="$(jq -r .number <<<"$pr")"
+          published_head="$(jq -r .head.sha <<<"$pr")"
+
+          workflow="$(gh api "repos/$GH_REPO/actions/workflows/approval-automation.yml")"
+          workflow_id="$(jq -r .id <<<"$workflow")"
+          runs="$(gh api --paginate "repos/$GH_REPO/actions/workflows/$workflow_id/runs?event=issues&branch=$DEFAULT_BRANCH&status=completed&per_page=100" --slurp)"
+          found=''
+          while IFS= read -r run; do
+            run_id="$(jq -r .id <<<"$run")"
+            run_attempt="$(jq -r .run_attempt <<<"$run")"
+            jq -e --argjson workflow_id "$workflow_id" \
+              --arg path ".github/workflows/approval-automation.yml" \
+              --arg branch "$DEFAULT_BRANCH" '
+              .event == "issues" and .workflow_id == $workflow_id and
+              .path == $path and .head_branch == $branch and
+              .status == "completed" and .conclusion == "success"
+            ' <<<"$run" >/dev/null || continue
+            artifact_name="candidate-publication-$run_id-$run_attempt"
+            artifacts="$(gh api "repos/$GH_REPO/actions/runs/$run_id/artifacts")"
+            artifact_ids="$(jq -r --arg name "$artifact_name" '[.artifacts[] | select(.name == $name and .expired == false)] | if length == 1 then .[0].id else empty end' <<<"$artifacts")"
+            [ -n "$artifact_ids" ] || continue
+            rm -f "$RUNNER_TEMP/provenance.zip" "$RUNNER_TEMP/publication-provenance.json"
+            gh api "repos/$GH_REPO/actions/artifacts/$artifact_ids/zip" > "$RUNNER_TEMP/provenance.zip"
+            unzip -p "$RUNNER_TEMP/provenance.zip" publication-provenance.json > "$RUNNER_TEMP/publication-provenance.json" || continue
+            provenance="$(cat "$RUNNER_TEMP/publication-provenance.json")"
+            if jq -e --argjson candidate "$CANDIDATE" --argjson pr "$pr_number" \
+              --arg head "$published_head" --argjson run "$run_id" --argjson attempt "$run_attempt" \
+              --arg workflow "$GH_REPO/.github/workflows/approval-automation.yml@" \
+              --arg fingerprint "$requirements_fingerprint" \
+              --arg source_sha "$(jq -r .head_sha <<<"$run")" --arg source_branch "$DEFAULT_BRANCH" '
+              .version == 1 and .candidate == $candidate and .pullRequest == $pr and
+              .publishedHeadSha == $head and .publicationRunId == $run and
+              .publicationRunAttempt == $attempt and
+              .requirementsFingerprint == $fingerprint and
+              (.publicationWorkflow | startswith($workflow)) and
+              .publicationSourceSha == $source_sha and
+              .publicationSourceBranch == $source_branch
+            ' <<<"$provenance" >/dev/null; then
+              [ -z "$found" ] || { echo "Ambiguous publication provenance" >&2; exit 1; }
+              found="$run_id:$run_attempt"
+            fi
+          done < <(jq -c '[.[].workflow_runs[]] | sort_by(.created_at) | reverse[]' <<<"$runs")
+
+          [ -n "$found" ] || {
+            echo "No retained immutable publication artifact matches Candidate #$CANDIDATE and PR #$pr_number" >&2
+            echo "Recovery is limited by the publication artifact retention period; it is not bypassed." >&2
+            exit 1
+          }
+          publication_run_id="${found%%:*}"
+          publication_run_attempt="${found##*:}"
+
+          # Re-read the PR after discovery so a concurrent head update cannot pass.
+          current_pr="$(gh api "repos/$GH_REPO/pulls/$pr_number")"
+          jq -e --arg head "$published_head" '.state == "open" and .head.sha == $head' <<<"$current_pr" >/dev/null
+
           gh api --method POST "repos/$GH_REPO/dispatches" \
             -f event_type=self-improvement-review \
-            -F "client_payload[pr_number]=$PR_NUMBER" \
-            -F "client_payload[publication_run_id]=$PUBLICATION_RUN_ID" \
-            -F "client_payload[publication_run_attempt]=$PUBLICATION_RUN_ATTEMPT"
+            -F "client_payload[pr_number]=$pr_number" \
+            -F "client_payload[publication_run_id]=$publication_run_id" \
+            -F "client_payload[publication_run_attempt]=$publication_run_attempt"
