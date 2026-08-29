@@ -127,7 +127,8 @@ test('Review hands its immutable MERGE_READY run to Trusted Merge by repository 
 test('Trusted Merge re-authenticates the dispatched Review run and exact artifact', async () => {
   const trusted = await workflow('trusted-merge.yml');
 
-  assert.match(trusted, /actions\/runs\/\$REVIEW_RUN_ID/);
+  assert.match(trusted, /actions\/runs\/\$REVIEW_RUN_ID\/attempts\/\$REVIEW_RUN_ATTEMPT/);
+  assert.doesNotMatch(trusted, /actions\/runs\/\$REVIEW_RUN_ID"/);
   assert.match(trusted, /\.name == "Self-Improvement Review"/);
   assert.match(trusted, /\.path == "\.github\/workflows\/review-fix\.yml"/);
   assert.match(trusted, /\.event == "repository_dispatch"/);

@@ -39,7 +39,7 @@ jobs:
           [[ "$REVIEW_WORKFLOW_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
 
           for attempt in $(seq 1 30); do
-            review_run="$(gh api "repos/$GH_REPO/actions/runs/$REVIEW_RUN_ID")"
+            review_run="$(gh api "repos/$GH_REPO/actions/runs/$REVIEW_RUN_ID/attempts/$REVIEW_RUN_ATTEMPT")"
             status="$(jq -r .status <<<"$review_run")"
             [ "$status" != completed ] || break
             sleep 2
