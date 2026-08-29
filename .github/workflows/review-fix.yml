@@ -8,6 +8,11 @@ on:
 # across fresh GitHub-hosted runners. This workflow has no merge credential.
 permissions: {}
 
+env:
+  REVIEW_PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+  REVIEW_PUBLICATION_RUN_ID: ${{ github.event.client_payload.publication_run_id }}
+  REVIEW_PUBLICATION_RUN_ATTEMPT: ${{ github.event.client_payload.publication_run_attempt }}
+
 concurrency:
   group: review-${{ github.event.client_payload.pr_number }}
   cancel-in-progress: true
@@ -35,18 +40,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PUBLICATION_RUN_ID: ${{ github.event.client_payload.publication_run_id }}
-          PUBLICATION_RUN_ATTEMPT: ${{ github.event.client_payload.publication_run_attempt }}
+          PUBLICATION_RUN_ID: ${{ env.REVIEW_PUBLICATION_RUN_ID }}
+          PUBLICATION_RUN_ATTEMPT: ${{ env.REVIEW_PUBLICATION_RUN_ATTEMPT }}
         run: |
           set -euo pipefail
           case "$PUBLICATION_RUN_ID:$PUBLICATION_RUN_ATTEMPT" in *[!0-9:]*|:*|*:) exit 1;; esac
           run="$(gh api "repos/$GH_REPO/actions/runs/$PUBLICATION_RUN_ID")"
           jq -e --arg workflow ".github/workflows/approval-automation.yml" \
-            --argjson attempt "$PUBLICATION_RUN_ATTEMPT" \
-            '.event == "issues" and .run_attempt == $attempt and
-             .path == $workflow' <<<"$run" >/dev/null
-          artifact="$(gh api "repos/$GH_REPO/actions/runs/$PUBLICATION_RUN_ID/artifacts" \
-            --jq '.artifacts[] | select(.name == "candidate-publication-'"$PUBLICATION_RUN_ID-$PUBLICATION_RUN_ATTEMPT"'") | .id')"
+            '.event == "issues" and .path == $workflow' <<<"$run" >/dev/null
+          # The run endpoint describes the latest rerun attempt. Authority instead
+          # comes from the exact retained artifact attempt named in the dispatch.
+          artifacts="$(gh api --paginate "repos/$GH_REPO/actions/runs/$PUBLICATION_RUN_ID/artifacts?per_page=100" --slurp)"
+          artifact="$(jq -r --arg name "candidate-publication-$PUBLICATION_RUN_ID-$PUBLICATION_RUN_ATTEMPT" \
+            '.[].artifacts[] | select(.name == $name and .expired == false) | .id' <<<"$artifacts")"
           test "$(wc -l <<<"$artifact")" -eq 1
           gh api "repos/$GH_REPO/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/provenance.zip"
           unzip -p "$RUNNER_TEMP/provenance.zip" publication-provenance.json > "$RUNNER_TEMP/provenance.json"
@@ -56,21 +62,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.client_payload.pr_number }}
-          PUBLICATION_RUN_ID: ${{ github.event.client_payload.publication_run_id }}
-          PUBLICATION_RUN_ATTEMPT: ${{ github.event.client_payload.publication_run_attempt }}
+          PR_NUMBER: ${{ env.REVIEW_PR_NUMBER }}
+          PUBLICATION_RUN_ID: ${{ env.REVIEW_PUBLICATION_RUN_ID }}
+          PUBLICATION_RUN_ATTEMPT: ${{ env.REVIEW_PUBLICATION_RUN_ATTEMPT }}
         run: |
           set -euo pipefail
           provenance="$(cat "$RUNNER_TEMP/provenance.json")"
           publication_run="$(gh api "repos/$GH_REPO/actions/runs/$PUBLICATION_RUN_ID")"
+          source_sha="$(jq -r .publicationSourceSha <<<"$provenance")"
+          source_branch="$(jq -r .publicationSourceBranch <<<"$provenance")"
+          expected_workflow="$GITHUB_REPOSITORY/.github/workflows/approval-automation.yml@refs/heads/$source_branch"
           jq -e --argjson pr "$PR_NUMBER" --argjson run "$PUBLICATION_RUN_ID" \
             --argjson attempt "$PUBLICATION_RUN_ATTEMPT" \
-            --arg workflow "$GITHUB_REPOSITORY/.github/workflows/approval-automation.yml@" \
+            --arg workflow "$expected_workflow" \
             '.version == 1 and .pullRequest == $pr and .publicationRunId == $run and
-             .publicationRunAttempt == $attempt and (.publicationWorkflow | startswith($workflow)) and
+             .publicationRunAttempt == $attempt and .publicationWorkflow == $workflow and
              (.publishedHeadSha | test("^[0-9a-f]{40}$"))' <<<"$provenance" >/dev/null
-          jq -e --arg sha "$(jq -r .publicationSourceSha <<<"$provenance")" \
-            --arg ref "$(jq -r .publicationSourceBranch <<<"$provenance")" \
+          jq -e --arg sha "$source_sha" --arg ref "$source_branch" \
             '.head_sha == $sha and .head_branch == $ref' <<<"$publication_run" >/dev/null
           candidate="$(jq -r .candidate <<<"$provenance")"
           fingerprint="$(jq -r .requirementsFingerprint <<<"$provenance")"

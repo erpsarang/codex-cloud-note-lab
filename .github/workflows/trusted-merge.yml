@@ -64,22 +64,25 @@ jobs:
           # mutable PR names, titles, branches, and bodies grant no authority.
           publication_run="$(gh api "repos/$GH_REPO/actions/runs/$publication_run_id")"
           jq -e --arg workflow ".github/workflows/approval-automation.yml" \
-            --argjson attempt "$publication_run_attempt" \
-            '.event == "issues" and .conclusion == "success" and .run_attempt == $attempt and
+            '.event == "issues" and .conclusion == "success" and
              .path == $workflow' <<<"$publication_run" >/dev/null
-          publication_artifact="$(gh api "repos/$GH_REPO/actions/runs/$publication_run_id/artifacts" \
-            --jq '.artifacts[] | select(.name == "candidate-publication-'"$publication_run_id-$publication_run_attempt"'") | .id')"
+          publication_artifacts="$(gh api --paginate "repos/$GH_REPO/actions/runs/$publication_run_id/artifacts?per_page=100" --slurp)"
+          publication_artifact="$(jq -r --arg name "candidate-publication-$publication_run_id-$publication_run_attempt" \
+            '.[].artifacts[] | select(.name == $name and .expired == false) | .id' <<<"$publication_artifacts")"
           test "$(wc -l <<<"$publication_artifact")" -eq 1
           gh api "repos/$GH_REPO/actions/artifacts/$publication_artifact/zip" > "$RUNNER_TEMP/publication.zip"
           unzip -p "$RUNNER_TEMP/publication.zip" publication-provenance.json > "$RUNNER_TEMP/publication.json"
+          publication_source_branch="$(jq -r .publicationSourceBranch "$RUNNER_TEMP/publication.json")"
+          expected_publication_workflow="$GH_REPO/.github/workflows/approval-automation.yml@refs/heads/$publication_source_branch"
           jq -e --argjson candidate "$candidate" --argjson pr "$pr_number" \
             --arg head "$expected_head" --arg fingerprint "$expected_fingerprint" \
             --argjson run "$publication_run_id" --argjson attempt "$publication_run_attempt" \
+            --arg workflow "$expected_publication_workflow" \
             '.candidate==$candidate and .pullRequest==$pr and .publishedHeadSha==$head and
              .requirementsFingerprint==$fingerprint and .publicationRunId==$run and
-             .publicationRunAttempt==$attempt' "$RUNNER_TEMP/publication.json" >/dev/null
+             .publicationRunAttempt==$attempt and .publicationWorkflow==$workflow' "$RUNNER_TEMP/publication.json" >/dev/null
           jq -e --arg sha "$(jq -r .publicationSourceSha "$RUNNER_TEMP/publication.json")" \
-            --arg ref "$(jq -r .publicationSourceBranch "$RUNNER_TEMP/publication.json")" \
+            --arg ref "$publication_source_branch" \
             '.head_sha == $sha and .head_branch == $ref' <<<"$publication_run" >/dev/null
 
           issue="$(gh api "repos/$GH_REPO/issues/$candidate")"
