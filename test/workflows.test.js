@@ -231,6 +231,10 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /def git_limited\(limit, \*args\)/);
   assert.match(ai, /source\.read\(requirements_cap \+ 1\)/);
   assert.match(ai, /requirements_oversized = len\(requirements\) > requirements_cap/);
+  assert.match(ai, /data\.decode\("utf-8"\)/);
+  assert.doesNotMatch(ai, /decode\("utf-8", "replace"\)/);
+  assert.match(ai, /review_input_incomplete = requirements_oversized or requirements_invalid_utf8/);
+  assert.match(ai, /binary or file_truncated or patch_invalid_utf8/);
   assert.match(ai, /16 \* 1024, "--literal-pathspecs", "diff"/);
   assert.match(ai, /diff content for \{path!r\} exceeded 16384 bytes/);
   assert.match(ai, /--no-ext-diff.*--no-textconv.*--no-renames/s);
@@ -259,6 +263,60 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /if: env\.REVIEW_INPUT_INCOMPLETE == 'true'\n\s+run: printf '%s\\n' 'VERDICT: NON_PASS'/);
   const action = ai.slice(ai.indexOf('uses: openai/codex-action@v1'));
   assert.doesNotMatch(action, /candidate\.diff|candidate-requirements\.md|working-directory:/);
+});
+
+test('invalid UTF-8 review text deterministically bypasses AI and fails closed', async () => {
+  const review = await workflow('review-fix.yml');
+  const python = review.match(/          python3 - <<'PY'\n([\s\S]*?)\n          PY/)[1]
+    .split('\n').map((line) => line.slice(10)).join('\n');
+  const fixture = await mkdtemp(join(tmpdir(), 'review-invalid-utf8-'));
+  const candidate = join(fixture, 'candidate-source');
+  const trusted = join(fixture, 'trusted-review-input');
+  const run = (...args) => {
+    const result = spawnSync('git', args, { cwd: candidate, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const construct = (base, head) => spawnSync('python3', ['-c', python], {
+    cwd: fixture,
+    encoding: 'utf8',
+    env: { ...process.env, BASE_SHA: base, HEAD_SHA: head, RUNNER_TEMP: fixture },
+  });
+
+  try {
+    await mkdir(candidate);
+    await mkdir(trusted);
+    run('init', '-q');
+    run('config', 'user.name', 'Regression Test');
+    run('config', 'user.email', 'test@example.invalid');
+    await writeFile(join(candidate, '.gitattributes'), 'invalid.txt diff\n');
+    await writeFile(join(candidate, 'invalid.txt'), 'baseline\n');
+    run('add', '.');
+    run('commit', '-qm', 'base');
+    const base = run('rev-parse', 'HEAD');
+    await writeFile(join(trusted, 'candidate-requirements.md'), 'Review all bytes.\n');
+    await writeFile(join(candidate, 'invalid.txt'), Buffer.from([0x66, 0x6f, 0x80, 0x0a]));
+    run('add', '-A');
+    run('commit', '-qm', 'invalid diff bytes');
+    const head = run('rev-parse', 'HEAD');
+
+    let result = construct(base, head);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(join(fixture, 'review-input-incomplete'), 'utf8'), 'true\n');
+    let prompt = await readFile(join(fixture, 'review-prompt.txt'), 'utf8');
+    assert.match(prompt, /INVALID UTF-8: diff content/);
+    assert.doesNotMatch(prompt, /\uFFFD/);
+
+    await writeFile(join(trusted, 'candidate-requirements.md'), Buffer.from([0x72, 0x65, 0x71, 0x80]));
+    result = construct(head, head);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(join(fixture, 'review-input-incomplete'), 'utf8'), 'true\n');
+    prompt = await readFile(join(fixture, 'review-prompt.txt'), 'utf8');
+    assert.match(prompt, /INVALID UTF-8: approved requirements/);
+    assert.doesNotMatch(prompt, /\uFFFD/);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test('oversized approved requirements deterministically bypass AI and fail closed', async () => {

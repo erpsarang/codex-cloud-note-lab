@@ -261,8 +261,11 @@ jobs:
                   raise subprocess.CalledProcessError(process.returncode, args)
               return data[:limit], truncated
 
-          def text(data):
-              return data.decode("utf-8", "replace")
+          def strict_text(data, label):
+              try:
+                  return data.decode("utf-8"), False
+              except UnicodeDecodeError:
+                  return f"[INVALID UTF-8: {label}; content omitted.]\n", True
 
           def size(revision, path):
               result = subprocess.run(
@@ -300,7 +303,10 @@ jobs:
           with open("trusted-review-input/candidate-requirements.md", "rb") as source:
               requirements = source.read(requirements_cap + 1)
           requirements_oversized = len(requirements) > requirements_cap
-          review_input_incomplete = requirements_oversized
+          requirements_text, requirements_invalid_utf8 = strict_text(
+              requirements, "approved requirements"
+          )
+          review_input_incomplete = requirements_oversized or requirements_invalid_utf8
           requirements_note = ""
           if requirements_oversized:
               requirements = requirements[:requirements_cap]
@@ -333,16 +339,19 @@ jobs:
                   16 * 1024, "--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
                   "--unified=80", base, head, "--", path,
               )
-              candidate = metadata + text(patch)
+              patch_text, patch_invalid_utf8 = strict_text(
+                  patch, f"diff content for {path!r}"
+              )
+              candidate = metadata + patch_text
               if file_truncated:
                   candidate += (f"\n[TRUNCATED: diff content for {path!r} exceeded 16384 bytes; "
                                 "remaining byte range omitted.]\n")
-              review_input_incomplete |= binary or file_truncated
+              review_input_incomplete |= binary or file_truncated or patch_invalid_utf8
               reserve = 1024 + sum(len(name.encode("utf-8", "replace")) + 8 for name in omitted)
               # Reserve fixed-length randomized boundary lines and the complete
               # (already capped) requirements. Requirements are never trimmed to
               # make a diff fit.
-              used = len((header + "".join(parts) + text(requirements) + requirements_note).encode()) + 512
+              used = len((header + "".join(parts) + requirements_text + requirements_note).encode()) + 512
               if used + len(candidate.encode()) + reserve <= prompt_cap:
                   parts.append(candidate)
               else:
@@ -352,7 +361,7 @@ jobs:
               review_input_incomplete = True
               marker = ("\n[TRUNCATED: text diff exceeded the deterministic 61440-byte prompt cap. "
                         f"Omitted {len(omitted)} file(s): " + ", ".join(repr(p) for p in omitted) + "]\n")
-              while len((header + "".join(parts) + marker + text(requirements) + requirements_note).encode()) + 512 > prompt_cap:
+              while len((header + "".join(parts) + marker + requirements_text + requirements_note).encode()) + 512 > prompt_cap:
                   if parts:
                       parts.pop()
                   else:
@@ -360,7 +369,7 @@ jobs:
               parts.append(marker)
 
           diff_payload = "".join(parts)
-          requirements_payload = text(requirements) + requirements_note
+          requirements_payload = requirements_text + requirements_note
           while True:
               boundary = "REVIEW_DATA_" + secrets.token_hex(32)
               if boundary not in diff_payload and boundary not in requirements_payload:
