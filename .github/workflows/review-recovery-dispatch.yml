@@ -1,0 +1,45 @@
+name: Self-Improvement Review Recovery Dispatcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Existing pull request number to re-review
+        required: true
+        type: string
+      publication_run_id:
+        description: Approval Automation publication run ID
+        required: true
+        type: string
+      publication_run_attempt:
+        description: Approval Automation publication run attempt
+        required: true
+        type: string
+
+# This secretless workflow can request a recovery, but it cannot review or merge.
+# repository_dispatch always loads the Review workflow from the default branch.
+permissions:
+  contents: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Request trusted default-branch review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
+          PUBLICATION_RUN_ATTEMPT: ${{ inputs.publication_run_attempt }}
+        run: |
+          set -euo pipefail
+          for value in "$PR_NUMBER" "$PUBLICATION_RUN_ID" "$PUBLICATION_RUN_ATTEMPT"; do
+            case "$value" in ''|*[!0-9]*) exit 1;; esac
+          done
+          gh api --method POST "repos/$GH_REPO/dispatches" \
+            -f event_type=self-improvement-review \
+            -F "client_payload[pr_number]=$PR_NUMBER" \
+            -F "client_payload[publication_run_id]=$PUBLICATION_RUN_ID" \
+            -F "client_payload[publication_run_attempt]=$PUBLICATION_RUN_ATTEMPT"

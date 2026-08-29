@@ -5,24 +5,34 @@ import test from 'node:test';
 const workflow = (name) =>
   readFile(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8');
 
-test('Review manual recovery normalizes provenance inputs into the existing validation path', async () => {
+test('automatic Review accepts only the existing repository dispatch payload', async () => {
   const review = await workflow('review-fix.yml');
   const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
 
   assert.match(review, /repository_dispatch:\n    types: \[self-improvement-review\]/);
-  assert.match(review, /workflow_dispatch:\n    inputs:/);
-  for (const input of ['pr_number', 'publication_run_id', 'publication_run_attempt']) {
-    assert.match(review, new RegExp(`      ${input}:\\n(?:        [^\\n]+\\n)*        required: true`));
-  }
-  assert.match(review, /REVIEW_PR_NUMBER:.*inputs\.pr_number.*github\.event\.client_payload\.pr_number/);
-  assert.match(review, /REVIEW_PUBLICATION_RUN_ID:.*inputs\.publication_run_id.*github\.event\.client_payload\.publication_run_id/);
-  assert.match(review, /REVIEW_PUBLICATION_RUN_ATTEMPT:.*inputs\.publication_run_attempt.*github\.event\.client_payload\.publication_run_attempt/);
+  assert.doesNotMatch(review, /workflow_dispatch:/);
+  assert.match(review, /REVIEW_PR_NUMBER: \$\{\{ github\.event\.client_payload\.pr_number \}\}/);
+  assert.match(review, /REVIEW_PUBLICATION_RUN_ID: \$\{\{ github\.event\.client_payload\.publication_run_id \}\}/);
+  assert.match(review, /REVIEW_PUBLICATION_RUN_ATTEMPT: \$\{\{ github\.event\.client_payload\.publication_run_attempt \}\}/);
   assert.match(authorize, /PR_NUMBER: \$\{\{ env\.REVIEW_PR_NUMBER \}\}/);
   assert.match(authorize, /PUBLICATION_RUN_ID: \$\{\{ env\.REVIEW_PUBLICATION_RUN_ID \}\}/);
   assert.match(authorize, /PUBLICATION_RUN_ATTEMPT: \$\{\{ env\.REVIEW_PUBLICATION_RUN_ATTEMPT \}\}/);
   assert.match(authorize, /\.state == "open" and \.head\.sha == \$head/);
   assert.match(authorize, /index\("approved"\) != null/);
   assert.match(authorize, /\[ "\$actual" = "\$fingerprint" \]/);
+});
+
+test('manual recovery uses a secretless dispatcher into the trusted Review event', async () => {
+  const dispatcher = await workflow('review-recovery-dispatch.yml');
+
+  assert.match(dispatcher, /workflow_dispatch:\n    inputs:/);
+  for (const input of ['pr_number', 'publication_run_id', 'publication_run_attempt']) {
+    assert.match(dispatcher, new RegExp(`      ${input}:\\n(?:        [^\\n]+\\n)*        required: true`));
+    assert.match(dispatcher, new RegExp(`client_payload\\[${input}\\]`));
+  }
+  assert.match(dispatcher, /event_type=self-improvement-review/);
+  assert.match(dispatcher, /permissions:\n  contents: write/);
+  assert.doesNotMatch(dispatcher, /actions\/checkout|OPENAI_API_KEY|secrets\.|SELF_IMPROVEMENT_MERGE_TOKEN|pulls\/[^\n]+\/merge|gh pr merge|git push/);
 });
 
 test('Review recovery preserves the read-only boundary and has no merge authority', async () => {
@@ -76,19 +86,9 @@ test('repository dispatch CI provenance remains bound to the outer trusted actor
 
   assert.match(validation, /EXPECTED_ACTOR: \$\{\{ github\.actor \}\}/);
   assert.match(validation, /EXPECTED_ACTOR_ID: \$\{\{ github\.actor_id \}\}/);
-  assert.match(validation, /if \[ "\$REVIEW_EVENT_NAME" = workflow_dispatch \]; then/);
   assert.match(validation, /\.actor\.login == \$actor and \.actor\.id == \$actor_id/);
   assert.match(validation, /\.triggering_actor\.login == \$actor and \.triggering_actor\.id == \$actor_id/);
-});
-
-test('manual recovery binds nested CI provenance to the GitHub Actions token identity', async () => {
-  const review = await workflow('review-fix.yml');
-  const validation = review.slice(review.indexOf('  validate-test:'), review.indexOf('  ai-review:'));
-
-  assert.match(validation, /REVIEW_EVENT_NAME: \$\{\{ github\.event_name \}\}/);
-  assert.match(validation, /EXPECTED_ACTOR='github-actions\[bot\]'/);
-  assert.match(validation, /EXPECTED_ACTOR_ID=41898282/);
-  assert.doesNotMatch(validation, /gh api user/);
+  assert.doesNotMatch(validation, /REVIEW_EVENT_NAME|github-actions\[bot\]|41898282/);
 });
 
 test('publication provenance is immutable and authorizes the exact current head', async () => {
