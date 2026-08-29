@@ -6,7 +6,7 @@ on:
 
 permissions:
   actions: read
-  contents: read
+  contents: write
   issues: write
   pull-requests: read
 
@@ -67,6 +67,7 @@ jobs:
           unzip -p "$RUNNER_TEMP/merge-ready.zip" merge-ready.json > "$RUNNER_TEMP/ready/merge-ready.json"
 
       - name: Validate trusted state and merge exact head
+        id: merge
         env:
           GH_TOKEN: ${{ secrets.SELF_IMPROVEMENT_MERGE_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -87,6 +88,7 @@ jobs:
             (.reviewRunId > 0) and (.reviewRunAttempt > 0) and
             .ciContext == "test" and .ciResult == "success" and
             (.publicationRunId > 0) and (.publicationRunAttempt > 0) and
+            ((.staleRecoveryCount // 0) == 0 or .staleRecoveryCount == 1) and
             (has("reviewFixAttempts") | not)' "$CONTRACT" >/dev/null
           jq -e --argjson run "$REVIEW_RUN_ID" --argjson attempt "$REVIEW_RUN_ATTEMPT" \
             --arg source "$REVIEW_WORKFLOW_SOURCE_SHA" '
@@ -104,6 +106,9 @@ jobs:
           expected_fingerprint="$(jq -r .requirementsFingerprint "$CONTRACT")"
           publication_run_id="$(jq -r .publicationRunId "$CONTRACT")"
           publication_run_attempt="$(jq -r .publicationRunAttempt "$CONTRACT")"
+          # Version-2 contracts already in flight when stale recovery was
+          # deployed have no count; they are the initial (count-zero) review.
+          stale_recovery_count="$(jq -r '(.staleRecoveryCount // 0)' "$CONTRACT")"
 
           # Independently re-read the immutable Approval Automation artifact;
           # mutable PR names, titles, branches, and bodies grant no authority.
@@ -135,15 +140,10 @@ jobs:
           actual_fingerprint="$(jq -r .body <<<"$issue" | sha256sum | cut -d' ' -f1)"
           [ "$actual_fingerprint" = "$expected_fingerprint" ]
 
-          # This early comparison gives a clear failure before preparing the merge.
-          # The compare-and-swap push below repeats it atomically with publication.
-          current_base="$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)"
-          [ "$current_base" = "$expected_base" ]
-
           pr="$(gh api "repos/$GH_REPO/pulls/$pr_number")"
-          jq -e --arg head "$expected_head" --arg base "$expected_base" --arg branch "$DEFAULT_BRANCH" \
+          jq -e --arg head "$expected_head" --arg branch "$DEFAULT_BRANCH" \
             '.state == "open" and .draft == false and .head.sha == $head and
-             .base.sha == $base and .base.ref == $branch and .mergeable == true' <<<"$pr" >/dev/null
+             .base.ref == $branch' <<<"$pr" >/dev/null
 
           # The tested base identifies the prospective tree; it is intentionally
           # distinct from the trusted commit that supplied the nested workflow.
@@ -156,6 +156,42 @@ jobs:
           gh api "repos/$GH_REPO/pulls/$pr_number/files?per_page=100" --paginate \
             --jq '.[] | .filename, (.previous_filename // empty)' |
             if grep -Eq '^\.github/(workflows|actions)/'; then exit 1; fi
+
+          # Never merge evidence tested against a stale base. One new Review may
+          # be requested for the unchanged candidate head and current base. If
+          # that replacement also goes stale, fail closed instead of looping.
+          # Read ref/PR/ref until both ref reads agree. This gives stale-base
+          # handling a coherent bounded snapshot even if the branch advances
+          # while GitHub is refreshing the PR. Exhaustion fails closed.
+          snapshot_ready=false
+          for snapshot_attempt in 1 2 3; do
+            base_before="$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)"
+            pr="$(gh api "repos/$GH_REPO/pulls/$pr_number")"
+            base_after="$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)"
+            if [ "$base_before" = "$base_after" ] &&
+               jq -e --arg base "$base_after" '.base.sha == $base' <<<"$pr" >/dev/null; then
+              current_base="$base_after"
+              snapshot_ready=true
+              break
+            fi
+          done
+          [ "$snapshot_ready" = true ]
+          jq -e --arg head "$expected_head" --arg branch "$DEFAULT_BRANCH" \
+            '.state == "open" and .draft == false and .head.sha == $head and
+             .base.ref == $branch' <<<"$pr" >/dev/null
+          if [ "$current_base" != "$expected_base" ]; then
+            [ "$stale_recovery_count" -eq 0 ]
+            jq -e --arg head "$expected_head" --arg base "$current_base" --arg branch "$DEFAULT_BRANCH" \
+              '.state == "open" and .head.sha == $head and .base.sha == $base and .base.ref == $branch' <<<"$pr" >/dev/null
+            printf 'stale=true\ncurrent_base=%s\npr=%s\nhead=%s\npublication_run_id=%s\npublication_run_attempt=%s\n' \
+              "$current_base" "$pr_number" "$expected_head" "$publication_run_id" "$publication_run_attempt" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo 'stale=false' >> "$GITHUB_OUTPUT"
+          # GitHub may temporarily report mergeable=null while recomputing after
+          # a base update. Require mergeability only after ruling out stale evidence.
+          jq -e --arg base "$expected_base" \
+            '.base.sha == $base and .mergeable == true' <<<"$pr" >/dev/null
 
           # Build a commit with the exact tested result tree, then update the default
           # branch with a server-side compare-and-swap. Unlike the pull merge API's
@@ -180,8 +216,30 @@ jobs:
           # GitHub should recognize the head as merged after the atomic ref update.
           gh api "repos/$GH_REPO/pulls/$pr_number" --jq .merged | grep -Fx true
 
+      - name: Request one current-base revalidation without merge authority
+        id: revalidate
+        if: steps.merge.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.merge.outputs.pr }}
+          HEAD_SHA: ${{ steps.merge.outputs.head }}
+          CURRENT_BASE: ${{ steps.merge.outputs.current_base }}
+          PUBLICATION_RUN_ID: ${{ steps.merge.outputs.publication_run_id }}
+          PUBLICATION_RUN_ATTEMPT: ${{ steps.merge.outputs.publication_run_attempt }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$GH_REPO/dispatches" \
+            -f event_type=self-improvement-review \
+            -F "client_payload[pr_number]=$PR_NUMBER" \
+            -F "client_payload[publication_run_id]=$PUBLICATION_RUN_ID" \
+            -F "client_payload[publication_run_attempt]=$PUBLICATION_RUN_ATTEMPT" \
+            -F 'client_payload[stale_recovery_count]=1' \
+            -f "client_payload[stale_recovery_base_sha]=$CURRENT_BASE" \
+            -f "client_payload[stale_recovery_head_sha]=$HEAD_SHA"
+
       - name: Put a changed or unverifiable candidate ON_HOLD
-        if: failure()
+        if: ${{ failure() && !(steps.merge.outputs.stale == 'true' && steps.revalidate.outcome == 'success') }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -191,4 +249,6 @@ jobs:
           test -f "$CONTRACT" || exit 0
           candidate="$(jq -r '.candidate // empty' "$CONTRACT")"
           test -n "$candidate" || exit 0
+          gh label create ON_HOLD --repo "$GH_REPO" --color B60205 \
+            --description 'Automated merge is paused pending investigation' --force
           gh issue edit "$candidate" --repo "$GH_REPO" --add-label ON_HOLD
