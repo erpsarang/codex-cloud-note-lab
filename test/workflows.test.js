@@ -168,6 +168,24 @@ test('Trusted Merge fails closed on stale evidence and requests one bounded reva
   assert.doesNotMatch(recovery, /SELF_IMPROVEMENT_MERGE_TOKEN|git push|pulls\/[^\n]+\/merge/);
 });
 
+test('Trusted Merge handles a stale base before requiring resolved mergeability', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+  const staleCheck = trusted.indexOf('if [ "$current_base" != "$expected_base" ]; then');
+  const mergeableCheck = trusted.indexOf('.base.sha == $base and .mergeable == true');
+
+  assert.ok(staleCheck >= 0);
+  assert.ok(mergeableCheck > staleCheck);
+  assert.doesNotMatch(trusted.slice(0, staleCheck), /\.mergeable == true/);
+});
+
+test('Trusted Merge suppresses ON_HOLD only after revalidation dispatch succeeds', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+  const recovery = trusted.slice(trusted.indexOf('- name: Request one current-base revalidation'));
+
+  assert.match(recovery, /id: revalidate/);
+  assert.match(recovery, /failure\(\).*steps\.merge\.outputs\.stale == 'true'.*steps\.revalidate\.outcome == 'success'/);
+});
+
 test('revalidated Review binds the current base and exact candidate head into new evidence', async () => {
   const review = await workflow('review-fix.yml');
   const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
@@ -175,11 +193,23 @@ test('revalidated Review binds the current base and exact candidate head into ne
 
   assert.match(authorize, /case "\$STALE_RECOVERY_COUNT" in/);
   assert.match(authorize, /\.base\.sha == \$base and \.head\.sha == \$head/);
-  assert.match(authorize, /\[ "\$published_head" = "\$STALE_RECOVERY_HEAD_SHA" \]/);
+  assert.match(authorize, /\[ "\$published_head" != "\$STALE_RECOVERY_HEAD_SHA" \]/);
   assert.match(authorize, /staleRecoveryCount:\$staleRecoveryCount/);
   assert.match(contract, /staleRecoveryCount:\$b\.staleRecoveryCount/);
   assert.match(contract, /testedBaseSha:\$t\.testedBaseSha,testedHeadSha:\$t\.testedHeadSha/);
   assert.match(contract, /finalReviewSha:\$r\.finalReviewSha/);
+});
+
+test('bounded stale recovery puts the candidate ON_HOLD when its base advances again', async () => {
+  const review = await workflow('review-fix.yml');
+  const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
+
+  assert.match(authorize, /issues: write/);
+  assert.match(authorize, /if ! jq -e --arg base "\$STALE_RECOVERY_BASE_SHA"/);
+  assert.match(authorize, /\.base\.sha == \$base and \.head\.sha == \$head/);
+  assert.match(authorize, /gh label create ON_HOLD[^\n]*--repo "\$GH_REPO"/);
+  assert.match(authorize, /gh issue edit "\$candidate"[^\n]*--add-label ON_HOLD/);
+  assert.match(authorize, /exit 1/);
 });
 
 test('fresh Trusted Merge path retains atomic compare-and-swap publication', async () => {

@@ -141,7 +141,7 @@ jobs:
           pr="$(gh api "repos/$GH_REPO/pulls/$pr_number")"
           jq -e --arg head "$expected_head" --arg branch "$DEFAULT_BRANCH" \
             '.state == "open" and .draft == false and .head.sha == $head and
-             .base.ref == $branch and .mergeable == true' <<<"$pr" >/dev/null
+             .base.ref == $branch' <<<"$pr" >/dev/null
 
           # The tested base identifies the prospective tree; it is intentionally
           # distinct from the trusted commit that supplied the nested workflow.
@@ -168,7 +168,10 @@ jobs:
             exit 0
           fi
           echo 'stale=false' >> "$GITHUB_OUTPUT"
-          jq -e --arg base "$expected_base" '.base.sha == $base' <<<"$pr" >/dev/null
+          # GitHub may temporarily report mergeable=null while recomputing after
+          # a base update. Require mergeability only after ruling out stale evidence.
+          jq -e --arg base "$expected_base" \
+            '.base.sha == $base and .mergeable == true' <<<"$pr" >/dev/null
 
           # Build a commit with the exact tested result tree, then update the default
           # branch with a server-side compare-and-swap. Unlike the pull merge API's
@@ -194,6 +197,7 @@ jobs:
           gh api "repos/$GH_REPO/pulls/$pr_number" --jq .merged | grep -Fx true
 
       - name: Request one current-base revalidation without merge authority
+        id: revalidate
         if: steps.merge.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -215,7 +219,7 @@ jobs:
             -f "client_payload[stale_recovery_head_sha]=$HEAD_SHA"
 
       - name: Put a changed or unverifiable candidate ON_HOLD
-        if: failure() && steps.merge.outputs.stale != 'true'
+        if: ${{ failure() && !(steps.merge.outputs.stale == 'true' && steps.revalidate.outcome == 'success') }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

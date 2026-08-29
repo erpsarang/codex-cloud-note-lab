@@ -27,7 +27,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-      issues: read
+      issues: write
       pull-requests: read
     outputs:
       candidate: ${{ steps.bind.outputs.candidate }}
@@ -97,9 +97,16 @@ jobs:
             1)
               [[ "$STALE_RECOVERY_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
               [[ "$STALE_RECOVERY_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
-              jq -e --arg base "$STALE_RECOVERY_BASE_SHA" --arg head "$STALE_RECOVERY_HEAD_SHA" \
-                '.base.sha == $base and .head.sha == $head' <<<"$pr" >/dev/null
-              [ "$published_head" = "$STALE_RECOVERY_HEAD_SHA" ]
+              if ! jq -e --arg base "$STALE_RECOVERY_BASE_SHA" --arg head "$STALE_RECOVERY_HEAD_SHA" \
+                '.base.sha == $base and .head.sha == $head' <<<"$pr" >/dev/null || \
+                [ "$published_head" != "$STALE_RECOVERY_HEAD_SHA" ]; then
+                # The single bounded recovery is no longer bindable. Fail closed
+                # and make the need for manual investigation explicit.
+                gh label create ON_HOLD --repo "$GH_REPO" --color B60205 \
+                  --description 'Automated merge is paused pending investigation' --force
+                gh issue edit "$candidate" --repo "$GH_REPO" --add-label ON_HOLD
+                exit 1
+              fi
               ;;
             *) exit 1 ;;
           esac
