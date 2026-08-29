@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 const workflow = (name) =>
@@ -230,6 +233,9 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /16 \* 1024, "diff"/);
   assert.match(ai, /diff content for \{path!r\} exceeded 16384 bytes/);
   assert.match(ai, /--no-ext-diff.*--no-textconv.*--no-renames/s);
+  assert.match(ai, /name_fields\[-1\] != b""/);
+  assert.match(ai, /len\(name_fields\) % 2/);
+  assert.match(ai, /status, path = name_fields\[offset:offset \+ 2\]/);
   assert.match(ai, /binary=\{'yes' if binary else 'no'\}/);
   assert.match(ai, /patch, file_truncated = \(b"", False\) if binary else git_limited/);
   assert.match(ai, /\[TRUNCATED: text diff exceeded the deterministic 61440-byte prompt cap/);
@@ -247,6 +253,65 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /prompt: \$\{\{ env\.REVIEW_PROMPT \}\}/);
   const action = ai.slice(ai.indexOf('uses: openai/codex-action@v1'));
   assert.doesNotMatch(action, /candidate\.diff|candidate-requirements\.md|working-directory:/);
+});
+
+test('trusted prompt parses modified, added, deleted, multiple, binary, and empty diffs', async () => {
+  const review = await workflow('review-fix.yml');
+  const python = review.match(/          python3 - <<'PY'\n([\s\S]*?)\n          PY/)[1]
+    .split('\n').map((line) => line.slice(10)).join('\n');
+  const fixture = await mkdtemp(join(tmpdir(), 'review-name-status-'));
+  const candidate = join(fixture, 'candidate-source');
+  const trusted = join(fixture, 'trusted-review-input');
+  const run = (...args) => {
+    const result = spawnSync('git', args, { cwd: candidate, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+
+  try {
+    await mkdir(candidate);
+    await mkdir(trusted);
+    run('init', '-q');
+    run('config', 'user.name', 'Regression Test');
+    run('config', 'user.email', 'test@example.invalid');
+    await writeFile(join(candidate, 'modified.txt'), 'before\n');
+    await writeFile(join(candidate, 'deleted.txt'), 'deleted\n');
+    run('add', '.');
+    run('commit', '-qm', 'base');
+    const base = run('rev-parse', 'HEAD');
+    await writeFile(join(candidate, 'modified.txt'), 'after\n');
+    await writeFile(join(candidate, 'added.txt'), 'added\n');
+    await writeFile(join(candidate, 'binary.dat'), Buffer.from([0, 1, 2, 3]));
+    await rm(join(candidate, 'deleted.txt'));
+    run('add', '-A');
+    run('commit', '-qm', 'head');
+    const head = run('rev-parse', 'HEAD');
+    await writeFile(join(trusted, 'candidate-requirements.md'), 'Review every file.\n');
+
+    const result = spawnSync('python3', ['-c', python], {
+      cwd: fixture,
+      encoding: 'utf8',
+      env: { ...process.env, BASE_SHA: base, HEAD_SHA: head, RUNNER_TEMP: fixture },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const prompt = await readFile(join(fixture, 'review-prompt.txt'), 'utf8');
+    assert.match(prompt, /modified\.txt.*change=M.*binary=no/);
+    assert.match(prompt, /added\.txt.*change=A.*binary=no/);
+    assert.match(prompt, /deleted\.txt.*change=D.*binary=no/);
+    assert.match(prompt, /binary\.dat.*change=A.*binary=yes/);
+    assert.equal((prompt.match(/--- FILE /g) || []).length, 4);
+
+    const empty = spawnSync('python3', ['-c', python], {
+      cwd: fixture,
+      encoding: 'utf8',
+      env: { ...process.env, BASE_SHA: head, HEAD_SHA: head, RUNNER_TEMP: fixture },
+    });
+    assert.equal(empty.status, 0, empty.stderr);
+    const emptyPrompt = await readFile(join(fixture, 'review-prompt.txt'), 'utf8');
+    assert.doesNotMatch(emptyPrompt, /--- FILE /);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test('AI review allows only the GitHub Actions bot actor', async () => {

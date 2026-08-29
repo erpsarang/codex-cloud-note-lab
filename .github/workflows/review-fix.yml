@@ -271,8 +271,16 @@ jobs:
               )
               return int(result.stdout) if result.returncode == 0 else 0
 
-          names = git("diff", "--no-ext-diff", "--no-textconv", "--no-renames",
-                      "--name-status", "-z", base, head).split(b"\0")
+          name_fields = git("diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+                            "--name-status", "-z", base, head).split(b"\0")
+          # With -z, --name-status is a NUL-delimited status/path sequence (not
+          # tab-delimited rows). Require the terminator and complete pairs so a
+          # malformed or partial Git result cannot silently omit review input.
+          if not name_fields or name_fields[-1] != b"":
+              raise ValueError("unterminated --name-status -z output")
+          name_fields.pop()
+          if len(name_fields) % 2:
+              raise ValueError("incomplete --name-status -z status/path pair")
           stats = git("diff", "--no-ext-diff", "--no-textconv", "--no-renames",
                       "--numstat", "-z", base, head).split(b"\0")
           stat_by_path = {}
@@ -281,8 +289,10 @@ jobs:
               stat_by_path[path] = (added, deleted)
 
           files = []
-          for row in filter(None, names):
-              status, path = row.split(b"\t", 1)
+          for offset in range(0, len(name_fields), 2):
+              status, path = name_fields[offset:offset + 2]
+              if status not in {b"A", b"D", b"M", b"T", b"U", b"X", b"B"} or not path:
+                  raise ValueError("malformed --name-status -z status/path pair")
               added, deleted = stat_by_path[path]
               files.append((status.decode(), path, added == b"-" or deleted == b"-"))
 
