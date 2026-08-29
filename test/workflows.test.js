@@ -20,7 +20,7 @@ test('automatic Review accepts only the existing repository dispatch payload', a
   assert.match(authorize, /PR_NUMBER: \$\{\{ env\.REVIEW_PR_NUMBER \}\}/);
   assert.match(authorize, /PUBLICATION_RUN_ID: \$\{\{ env\.REVIEW_PUBLICATION_RUN_ID \}\}/);
   assert.match(authorize, /PUBLICATION_RUN_ATTEMPT: \$\{\{ env\.REVIEW_PUBLICATION_RUN_ATTEMPT \}\}/);
-  assert.match(authorize, /\.state == "open" and \.head\.sha == \$head/);
+  assert.match(authorize, /\.state == "open" and \.draft == false and \.head\.sha == \$head and \.base\.ref == \$branch/);
   assert.match(authorize, /index\("approved"\) != null/);
   assert.match(authorize, /\[ "\$actual" = "\$fingerprint" \]/);
 });
@@ -240,21 +240,28 @@ test('revalidated Review binds the current base and exact candidate head into ne
   const contract = review.slice(review.indexOf('  merge-ready-contract:'));
 
   assert.match(authorize, /case "\$STALE_RECOVERY_COUNT" in/);
-  assert.match(authorize, /\.base\.sha == \$base and \.head\.sha == \$head/);
+  assert.match(authorize, /current_base=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
+  assert.match(authorize, /\.state == "open" and \.draft == false and \.head\.sha == \$head and \.base\.ref == \$branch/);
+  assert.match(authorize, /\[ "\$current_base" != "\$STALE_RECOVERY_BASE_SHA" \]/);
   assert.match(authorize, /\[ "\$published_head" != "\$STALE_RECOVERY_HEAD_SHA" \]/);
+  assert.doesNotMatch(authorize, /\.base\.sha/);
   assert.match(authorize, /staleRecoveryCount:\$staleRecoveryCount/);
   assert.match(contract, /staleRecoveryCount:\$b\.staleRecoveryCount/);
   assert.match(contract, /testedBaseSha:\$t\.testedBaseSha,testedHeadSha:\$t\.testedHeadSha/);
   assert.match(contract, /finalReviewSha:\$r\.finalReviewSha/);
 });
 
-test('bounded stale recovery puts the candidate ON_HOLD when its base advances again', async () => {
+test('bounded stale recovery authorizes against the live default-branch ref', async () => {
   const review = await workflow('review-fix.yml');
   const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
 
   assert.match(authorize, /issues: write/);
-  assert.match(authorize, /if ! jq -e --arg base "\$STALE_RECOVERY_BASE_SHA"/);
-  assert.match(authorize, /\.base\.sha == \$base and \.head\.sha == \$head/);
+  assert.match(authorize, /DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}/);
+  assert.match(authorize, /current_base="\$\(gh api "repos\/\$GH_REPO\/git\/ref\/heads\/\$DEFAULT_BRANCH" --jq \.object\.sha\)"/);
+  assert.match(authorize, /\[ "\$current_base" != "\$STALE_RECOVERY_BASE_SHA" \]/);
+  assert.match(authorize, /--arg head "\$published_head" --arg base "\$current_base"/);
+  assert.match(authorize, /"\$candidate" "\$fingerprint" "\$published_head" "\$current_base"/);
+  assert.doesNotMatch(authorize, /\.base\.sha/);
   assert.match(authorize, /gh label create ON_HOLD[^\n]*--repo "\$GH_REPO"/);
   assert.match(authorize, /gh issue edit "\$candidate"[^\n]*--add-label ON_HOLD/);
   assert.match(authorize, /exit 1/);
