@@ -3,6 +3,7 @@ import { loadNotes, saveNotes } from "./storage.js";
 
 const loadResult = loadNotes();
 const notes = loadResult.notes;
+let canShowEmptyState = loadResult.ok;
 const form = document.querySelector("#note-form");
 const input = document.querySelector("#note-input");
 const inputError = document.querySelector("#note-error");
@@ -15,14 +16,17 @@ if (!loadResult.ok) {
 }
 
 function persistNotes() {
-  storageStatus.textContent = saveNotes(notes)
-    ? ""
-    : "변경 사항이 이 브라우저에 저장되지 않았습니다.";
+  if (saveNotes(notes)) {
+    canShowEmptyState = true;
+    storageStatus.textContent = "";
+  } else {
+    storageStatus.textContent = "변경 사항이 이 브라우저에 저장되지 않았습니다.";
+  }
 }
 
 function renderNotes() {
   noteList.replaceChildren();
-  emptyState.hidden = !loadResult.ok || notes.length > 0;
+  emptyState.hidden = !canShowEmptyState || notes.length > 0;
   const deleteButtons = [];
 
   notes.forEach((note, index) => {
