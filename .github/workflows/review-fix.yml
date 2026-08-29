@@ -69,6 +69,7 @@ jobs:
           PR_NUMBER: ${{ env.REVIEW_PR_NUMBER }}
           PUBLICATION_RUN_ID: ${{ env.REVIEW_PUBLICATION_RUN_ID }}
           PUBLICATION_RUN_ATTEMPT: ${{ env.REVIEW_PUBLICATION_RUN_ATTEMPT }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           STALE_RECOVERY_COUNT: ${{ env.REVIEW_RECOVERY_COUNT }}
           STALE_RECOVERY_BASE_SHA: ${{ env.REVIEW_RECOVERY_BASE_SHA }}
           STALE_RECOVERY_HEAD_SHA: ${{ env.REVIEW_RECOVERY_HEAD_SHA }}
@@ -91,14 +92,17 @@ jobs:
           fingerprint="$(jq -r .requirementsFingerprint <<<"$provenance")"
           published_head="$(jq -r .publishedHeadSha <<<"$provenance")"
           pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
-          jq -e --arg head "$published_head" '.state == "open" and .head.sha == $head' <<<"$pr" >/dev/null
+          current_base="$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)"
+          [[ "$current_base" =~ ^[0-9a-f]{40}$ ]]
+          jq -e --arg head "$published_head" --arg branch "$DEFAULT_BRANCH" \
+            '.state == "open" and .draft == false and .head.sha == $head and .base.ref == $branch' \
+            <<<"$pr" >/dev/null
           case "$STALE_RECOVERY_COUNT" in
             0) ;;
             1)
               [[ "$STALE_RECOVERY_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
               [[ "$STALE_RECOVERY_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
-              if ! jq -e --arg base "$STALE_RECOVERY_BASE_SHA" --arg head "$STALE_RECOVERY_HEAD_SHA" \
-                '.base.sha == $base and .head.sha == $head' <<<"$pr" >/dev/null || \
+              if [ "$current_base" != "$STALE_RECOVERY_BASE_SHA" ] || \
                 [ "$published_head" != "$STALE_RECOVERY_HEAD_SHA" ]; then
                 # The single bounded recovery is no longer bindable. Fail closed
                 # and make the need for manual investigation explicit.
@@ -116,16 +120,16 @@ jobs:
           actual="$(sha256sum "$RUNNER_TEMP/candidate-requirements.md" | cut -d' ' -f1)"
           [ "$actual" = "$fingerprint" ]
           jq -n -S --argjson candidate "$candidate" --arg fingerprint "$fingerprint" \
-            --arg head "$published_head" --arg base "$(jq -r .base.sha <<<"$pr")" \
-            --arg baseBranch "$(jq -r .base.ref <<<"$pr")" --argjson pr "$PR_NUMBER" \
+            --arg head "$published_head" --arg base "$current_base" \
+            --arg baseBranch "$DEFAULT_BRANCH" --argjson pr "$PR_NUMBER" \
             --argjson publicationRunId "$PUBLICATION_RUN_ID" --argjson publicationRunAttempt "$PUBLICATION_RUN_ATTEMPT" \
             --argjson staleRecoveryCount "$STALE_RECOVERY_COUNT" \
             '{candidate:$candidate,fingerprint:$fingerprint,head:$head,base:$base,
               baseBranch:$baseBranch,pr:$pr,publicationRunId:$publicationRunId,
               publicationRunAttempt:$publicationRunAttempt,staleRecoveryCount:$staleRecoveryCount}' > "$RUNNER_TEMP/binding.json"
           printf 'candidate=%s\nfingerprint=%s\nhead=%s\nbase=%s\nbase_branch=%s\npr=%s\npublication_run_id=%s\npublication_run_attempt=%s\nstale_recovery_count=%s\n' \
-            "$candidate" "$fingerprint" "$published_head" "$(jq -r .base.sha <<<"$pr")" \
-            "$(jq -r .base.ref <<<"$pr")" "$PR_NUMBER" "$PUBLICATION_RUN_ID" "$PUBLICATION_RUN_ATTEMPT" \
+            "$candidate" "$fingerprint" "$published_head" "$current_base" \
+            "$DEFAULT_BRANCH" "$PR_NUMBER" "$PUBLICATION_RUN_ID" "$PUBLICATION_RUN_ATTEMPT" \
             "$STALE_RECOVERY_COUNT" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
