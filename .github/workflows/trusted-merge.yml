@@ -54,9 +54,10 @@ jobs:
           ' <<<"$review_run" >/dev/null
 
           artifacts="$(gh api --paginate "repos/$GH_REPO/actions/runs/$REVIEW_RUN_ID/artifacts?per_page=100" --slurp)"
-          artifact_id="$(jq -r '
+          artifact_pattern="^merge-ready-$REVIEW_RUN_ID-$REVIEW_RUN_ATTEMPT-[0-9]+-[0-9a-f]{40}$"
+          artifact_id="$(jq -r --arg pattern "$artifact_pattern" '
             [.[].artifacts[] |
-             select(.expired == false and (.name | test("^merge-ready-[0-9]+-[0-9a-f]{40}$")))] |
+             select(.expired == false and (.name | test($pattern)))] |
             if length == 1 then .[0].id else empty end
           ' <<<"$artifacts")"
           test -n "$artifact_id"

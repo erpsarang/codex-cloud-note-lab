@@ -120,6 +120,7 @@ test('Review hands its immutable MERGE_READY run to Trusted Merge by repository 
   assert.match(contract, /client_payload\[review_run_attempt\]=\$GITHUB_RUN_ATTEMPT/);
   assert.match(contract, /client_payload\[review_workflow_source_sha\]=\$GITHUB_SHA/);
   assert.match(contract, /reviewRunId:\$run,reviewRunAttempt:\$attempt,reviewWorkflowSourceSha:\$source/);
+  assert.match(contract, /name: merge-ready-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ needs\.authorize\.outputs\.pr \}\}-\$\{\{ needs\.authorize\.outputs\.head \}\}/);
   assert.doesNotMatch(review, /SELF_IMPROVEMENT_MERGE_TOKEN/);
 });
 
@@ -134,7 +135,10 @@ test('Trusted Merge re-authenticates the dispatched Review run and exact artifac
   assert.match(trusted, /\.run_attempt == \$review_attempt/);
   assert.match(trusted, /\.head_sha == \$sha and \.head_branch == \$branch/);
   assert.match(trusted, /actions\/runs\/\$REVIEW_RUN_ID\/artifacts\?per_page=100/);
+  assert.match(trusted, /artifact_pattern="\^merge-ready-\$REVIEW_RUN_ID-\$REVIEW_RUN_ATTEMPT-\[0-9\]\+-\[0-9a-f\]\{40\}\$"/);
+  assert.match(trusted, /\.name \| test\(\$pattern\)/);
   assert.match(trusted, /length == 1 then \.\[0\]\.id else empty/);
+  assert.doesNotMatch(trusted, /test\("\^merge-ready-\[0-9\]\+-\[0-9a-f\]\{40\}\$"\)/);
   assert.match(trusted, /\.reviewRunId == \$run and \.reviewRunAttempt == \$attempt/);
   assert.match(trusted, /\.reviewWorkflowSourceSha == \$source/);
 });

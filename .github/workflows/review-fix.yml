@@ -493,7 +493,7 @@ jobs:
           mv merge-ready.with-review.json merge-ready.json
       - uses: actions/upload-artifact@v4
         with:
-          name: merge-ready-${{ needs.authorize.outputs.pr }}-${{ needs.authorize.outputs.head }}
+          name: merge-ready-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.authorize.outputs.pr }}-${{ needs.authorize.outputs.head }}
           path: ${{ runner.temp }}/evidence/merge-ready.json
           if-no-files-found: error
           retention-days: 1
