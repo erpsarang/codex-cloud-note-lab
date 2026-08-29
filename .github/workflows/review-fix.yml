@@ -152,13 +152,10 @@ jobs:
           workflow="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml")"
           workflow_id="$(jq -r .id <<<"$workflow")"
           test "$workflow_id" != null
-          # workflow_dispatch resolves BASE_BRANCH at its current trusted tip. In a
-          # recovery, that tip can legitimately differ from historical BASE_SHA.
-          # Capture the ref immediately before dispatch and bind the resulting run
-          # to that trusted workflow source SHA instead of weakening the immutable
-          # tested base/head input binding carried by the title and nonce.
-          dispatch_ref_sha="$(gh api "repos/$GH_REPO/git/ref/heads/$BASE_BRANCH" --jq .object.sha)"
-          [[ "$dispatch_ref_sha" =~ ^[0-9a-f]{40}$ ]]
+          # workflow_dispatch resolves BASE_BRANCH at its current trusted tip. Do
+          # not pre-read that mutable ref: the branch can move before GitHub creates
+          # the run. The nonce-matched run below is the authority for the immutable
+          # workflow source SHA, while the title binds the tested base/head inputs.
           dispatch_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run ci.yml --repo "$GH_REPO" --ref "$BASE_BRANCH" -f tested_base_sha="$BASE_SHA" -f tested_head_sha="$HEAD_SHA" -f contract_nonce="$nonce"
           for attempt in $(seq 1 30); do
@@ -172,11 +169,12 @@ jobs:
               # Re-read the exact run rather than trusting the mutable list result.
               run="$(gh api "repos/$GH_REPO/actions/runs/$run_id")"
               jq -e --arg title "$title" --arg path ".github/workflows/ci.yml" \
-                --argjson workflow_id "$workflow_id" --arg dispatch_ref_sha "$dispatch_ref_sha" \
+                --argjson workflow_id "$workflow_id" \
                 --arg nonce "$nonce" --arg branch "$BASE_BRANCH" --arg since "$dispatch_started_at" \
                 --arg actor "$EXPECTED_ACTOR" --argjson actor_id "$EXPECTED_ACTOR_ID" '
                 .event == "workflow_dispatch" and .workflow_id == $workflow_id and .path == $path and
-                .display_title == $title and .head_branch == $branch and .head_sha == $dispatch_ref_sha and
+                .display_title == $title and .head_branch == $branch and
+                (.head_sha | test("^[0-9a-f]{40}$")) and
                 .run_attempt == 1 and .created_at >= $since and
                 .actor.login == $actor and .actor.id == $actor_id and
                 .triggering_actor.login == $actor and .triggering_actor.id == $actor_id' \
@@ -184,8 +182,11 @@ jobs:
               conclusion="$(jq -r '.conclusion // ""' <<<"$run")"
               [ "$conclusion" != failure ] && [ "$conclusion" != cancelled ] || exit 1
               [ "$conclusion" = success ] || { sleep 10; continue; }
-              jq -n -S --arg base "$BASE_SHA" --arg head "$HEAD_SHA" --arg tree "$RESULT_TREE" --argjson run "$run_id" \
-                '{testResult:"PASS",testedBaseSha:$base,testedHeadSha:$head,testedResultTree:$tree,ciRunId:$run}' > "$RUNNER_TEMP/test-result.json"
+              ci_workflow_source_sha="$(jq -r .head_sha <<<"$run")"
+              jq -n -S --arg base "$BASE_SHA" --arg head "$HEAD_SHA" --arg tree "$RESULT_TREE" \
+                --arg source "$ci_workflow_source_sha" --argjson run "$run_id" \
+                '{testResult:"PASS",testedBaseSha:$base,testedHeadSha:$head,testedResultTree:$tree,
+                  ciWorkflowSourceSha:$source,ciRunId:$run}' > "$RUNNER_TEMP/test-result.json"
               exit 0
             fi
             sleep 10
@@ -303,6 +304,7 @@ jobs:
               headSha:$b.head,baseBranch:$b.baseBranch,baseSha:$b.base,
               publicationRunId:$b.publicationRunId,publicationRunAttempt:$b.publicationRunAttempt,
               testedBaseSha:$t.testedBaseSha,testedHeadSha:$t.testedHeadSha,testedResultTree:$t.testedResultTree,
+              ciWorkflowSourceSha:$t.ciWorkflowSourceSha,
               ciRunId:$t.ciRunId,testResult:$t.testResult,finalReview:$r.finalReview,
               finalReviewSha:$r.finalReviewSha,ciContext:"test",ciResult:"success"}' > merge-ready.json
       - uses: actions/upload-artifact@v4

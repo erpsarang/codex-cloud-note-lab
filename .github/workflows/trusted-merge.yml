@@ -45,7 +45,8 @@ jobs:
           jq -e '.version == 2 and .finalReview == "PASS" and
             .finalReviewSha == .headSha and .testResult == "PASS" and
             .testedBaseSha == .baseSha and .testedHeadSha == .headSha and
-            (.testedResultTree | test("^[0-9a-f]{40}$")) and (.ciRunId > 0) and
+            (.testedResultTree | test("^[0-9a-f]{40}$")) and
+            (.ciWorkflowSourceSha | test("^[0-9a-f]{40}$")) and (.ciRunId > 0) and
             .ciContext == "test" and .ciResult == "success" and
             (.publicationRunId > 0) and (.publicationRunAttempt > 0) and
             (has("reviewFixAttempts") | not)' "$CONTRACT" >/dev/null
@@ -56,6 +57,7 @@ jobs:
           expected_base="$(jq -r .baseSha "$CONTRACT")"
           expected_tree="$(jq -r .testedResultTree "$CONTRACT")"
           ci_run_id="$(jq -r .ciRunId "$CONTRACT")"
+          ci_workflow_source_sha="$(jq -r .ciWorkflowSourceSha "$CONTRACT")"
           expected_fingerprint="$(jq -r .requirementsFingerprint "$CONTRACT")"
           publication_run_id="$(jq -r .publicationRunId "$CONTRACT")"
           publication_run_attempt="$(jq -r .publicationRunAttempt "$CONTRACT")"
@@ -100,9 +102,13 @@ jobs:
             '.state == "open" and .draft == false and .head.sha == $head and
              .base.sha == $base and .base.ref == $branch and .mergeable == true' <<<"$pr" >/dev/null
 
-          gh api "repos/$GH_REPO/actions/runs/$ci_run_id" \
-            --jq '[.name, .event, .conclusion, .head_sha] | @tsv' |
-            grep -Fx $'CI\tworkflow_dispatch\tsuccess\t'"$expected_base"
+          # The tested base identifies the prospective tree; it is intentionally
+          # distinct from the trusted commit that supplied the nested workflow.
+          ci_run="$(gh api "repos/$GH_REPO/actions/runs/$ci_run_id")"
+          jq -e --arg source "$ci_workflow_source_sha" --arg branch "$DEFAULT_BRANCH" \
+            '.name == "CI" and .event == "workflow_dispatch" and .conclusion == "success" and
+             .path == ".github/workflows/ci.yml" and .head_branch == $branch and
+             .head_sha == $source and .run_attempt == 1' <<<"$ci_run" >/dev/null
 
           gh api "repos/$GH_REPO/pulls/$pr_number/files?per_page=100" --paginate \
             --jq '.[] | .filename, (.previous_filename // empty)' |
