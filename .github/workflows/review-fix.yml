@@ -3,13 +3,32 @@ name: Self-Improvement Review
 on:
   repository_dispatch:
     types: [self-improvement-review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Existing pull request number to re-review
+        required: true
+        type: string
+      publication_run_id:
+        description: Approval Automation publication run ID
+        required: true
+        type: string
+      publication_run_attempt:
+        description: Approval Automation publication run attempt
+        required: true
+        type: string
 
 # Untrusted execution, secret-bearing review, and contract construction are split
 # across fresh GitHub-hosted runners. This workflow has no merge credential.
 permissions: {}
 
+env:
+  REVIEW_PR_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.client_payload.pr_number }}
+  REVIEW_PUBLICATION_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.publication_run_id || github.event.client_payload.publication_run_id }}
+  REVIEW_PUBLICATION_RUN_ATTEMPT: ${{ github.event_name == 'workflow_dispatch' && inputs.publication_run_attempt || github.event.client_payload.publication_run_attempt }}
+
 concurrency:
-  group: review-${{ github.event.client_payload.pr_number }}
+  group: review-${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.client_payload.pr_number }}
   cancel-in-progress: true
 
 jobs:
@@ -35,8 +54,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PUBLICATION_RUN_ID: ${{ github.event.client_payload.publication_run_id }}
-          PUBLICATION_RUN_ATTEMPT: ${{ github.event.client_payload.publication_run_attempt }}
+          PUBLICATION_RUN_ID: ${{ env.REVIEW_PUBLICATION_RUN_ID }}
+          PUBLICATION_RUN_ATTEMPT: ${{ env.REVIEW_PUBLICATION_RUN_ATTEMPT }}
         run: |
           set -euo pipefail
           case "$PUBLICATION_RUN_ID:$PUBLICATION_RUN_ATTEMPT" in *[!0-9:]*|:*|*:) exit 1;; esac
@@ -56,9 +75,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.client_payload.pr_number }}
-          PUBLICATION_RUN_ID: ${{ github.event.client_payload.publication_run_id }}
-          PUBLICATION_RUN_ATTEMPT: ${{ github.event.client_payload.publication_run_attempt }}
+          PR_NUMBER: ${{ env.REVIEW_PR_NUMBER }}
+          PUBLICATION_RUN_ID: ${{ env.REVIEW_PUBLICATION_RUN_ID }}
+          PUBLICATION_RUN_ATTEMPT: ${{ env.REVIEW_PUBLICATION_RUN_ATTEMPT }}
         run: |
           set -euo pipefail
           provenance="$(cat "$RUNNER_TEMP/provenance.json")"

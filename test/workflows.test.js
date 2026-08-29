@@ -5,6 +5,36 @@ import test from 'node:test';
 const workflow = (name) =>
   readFile(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8');
 
+test('Review manual recovery normalizes provenance inputs into the existing validation path', async () => {
+  const review = await workflow('review-fix.yml');
+  const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
+
+  assert.match(review, /repository_dispatch:\n    types: \[self-improvement-review\]/);
+  assert.match(review, /workflow_dispatch:\n    inputs:/);
+  for (const input of ['pr_number', 'publication_run_id', 'publication_run_attempt']) {
+    assert.match(review, new RegExp(`      ${input}:\\n(?:        [^\\n]+\\n)*        required: true`));
+  }
+  assert.match(review, /REVIEW_PR_NUMBER:.*inputs\.pr_number.*github\.event\.client_payload\.pr_number/);
+  assert.match(review, /REVIEW_PUBLICATION_RUN_ID:.*inputs\.publication_run_id.*github\.event\.client_payload\.publication_run_id/);
+  assert.match(review, /REVIEW_PUBLICATION_RUN_ATTEMPT:.*inputs\.publication_run_attempt.*github\.event\.client_payload\.publication_run_attempt/);
+  assert.match(authorize, /PR_NUMBER: \$\{\{ env\.REVIEW_PR_NUMBER \}\}/);
+  assert.match(authorize, /PUBLICATION_RUN_ID: \$\{\{ env\.REVIEW_PUBLICATION_RUN_ID \}\}/);
+  assert.match(authorize, /PUBLICATION_RUN_ATTEMPT: \$\{\{ env\.REVIEW_PUBLICATION_RUN_ATTEMPT \}\}/);
+  assert.match(authorize, /\.state == "open" and \.head\.sha == \$head/);
+  assert.match(authorize, /index\("approved"\) != null/);
+  assert.match(authorize, /\[ "\$actual" = "\$fingerprint" \]/);
+});
+
+test('Review recovery preserves the read-only boundary and has no merge authority', async () => {
+  const review = await workflow('review-fix.yml');
+
+  assert.match(review, /permissions: \{\}/);
+  assert.match(review, /allow-bot-users: github-actions\[bot\]/);
+  assert.match(review, /permission-profile: "read-only"/);
+  assert.doesNotMatch(review, /allow-bots: true/);
+  assert.doesNotMatch(review, /SELF_IMPROVEMENT_MERGE_TOKEN|pulls\/[^\n]+\/merge|gh pr merge|git push/);
+});
+
 test('manual CI constructs and records the prospective merge tree', async () => {
   const ci = await workflow('ci.yml');
 
