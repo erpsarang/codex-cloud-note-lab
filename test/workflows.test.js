@@ -232,6 +232,7 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /source\.read\(requirements_cap \+ 1\)/);
   assert.match(ai, /requirements_oversized = len\(requirements\) > requirements_cap/);
   assert.match(ai, /data\.decode\("utf-8"\)/);
+  assert.match(ai, /if b"\\0" in data:/);
   assert.doesNotMatch(ai, /decode\("utf-8", "replace"\)/);
   assert.match(ai, /review_input_incomplete = requirements_oversized or requirements_invalid_utf8/);
   assert.match(ai, /binary or file_truncated or patch_invalid_utf8/);
@@ -251,6 +252,7 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /test ! -e candidate-source/);
   assert.match(ai, /open\("trusted-review-input\/candidate-requirements\.md", "rb"\)/);
   assert.match(ai, /REVIEW_PROMPT<<%s/);
+  assert.match(ai, /if \[ "\$review_input_incomplete" = false \]; then[\s\S]*REVIEW_PROMPT<<%s/);
   assert.match(ai, />> "\$GITHUB_ENV"/);
   assert.doesNotMatch(ai, /GITHUB_OUTPUT/);
   assert.match(ai, /rm -rf trusted-review-input/);
@@ -314,6 +316,60 @@ test('invalid UTF-8 review text deterministically bypasses AI and fails closed',
     prompt = await readFile(join(fixture, 'review-prompt.txt'), 'utf8');
     assert.match(prompt, /INVALID UTF-8: approved requirements/);
     assert.doesNotMatch(prompt, /\uFFFD/);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test('NUL bytes in review text deterministically bypass AI and are not exported', async () => {
+  const review = await workflow('review-fix.yml');
+  const python = review.match(/          python3 - <<'PY'\n([\s\S]*?)\n          PY/)[1]
+    .split('\n').map((line) => line.slice(10)).join('\n');
+  const fixture = await mkdtemp(join(tmpdir(), 'review-nul-byte-'));
+  const candidate = join(fixture, 'candidate-source');
+  const trusted = join(fixture, 'trusted-review-input');
+  const run = (...args) => {
+    const result = spawnSync('git', args, { cwd: candidate, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const construct = (base, head) => spawnSync('python3', ['-c', python], {
+    cwd: fixture,
+    encoding: 'utf8',
+    env: { ...process.env, BASE_SHA: base, HEAD_SHA: head, RUNNER_TEMP: fixture },
+  });
+
+  try {
+    await mkdir(candidate);
+    await mkdir(trusted);
+    run('init', '-q');
+    run('config', 'user.name', 'Regression Test');
+    run('config', 'user.email', 'test@example.invalid');
+    await writeFile(join(candidate, '.gitattributes'), 'nul.txt diff\n');
+    await writeFile(join(candidate, 'nul.txt'), 'baseline\n');
+    run('add', '.');
+    run('commit', '-qm', 'base');
+    const base = run('rev-parse', 'HEAD');
+    await writeFile(join(trusted, 'candidate-requirements.md'), 'Review all bytes.\n');
+    await writeFile(join(candidate, 'nul.txt'), Buffer.from('after\0hidden\n'));
+    run('add', '-A');
+    run('commit', '-qm', 'NUL diff bytes');
+    const head = run('rev-parse', 'HEAD');
+
+    let result = construct(base, head);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(join(fixture, 'review-input-incomplete'), 'utf8'), 'true\n');
+    let prompt = await readFile(join(fixture, 'review-prompt.txt'));
+    assert.equal(prompt.includes(0), false);
+    assert.match(prompt.toString(), /NUL BYTE: diff content/);
+
+    await writeFile(join(trusted, 'candidate-requirements.md'), Buffer.from('requirement\0hidden'));
+    result = construct(head, head);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(join(fixture, 'review-input-incomplete'), 'utf8'), 'true\n');
+    prompt = await readFile(join(fixture, 'review-prompt.txt'));
+    assert.equal(prompt.includes(0), false);
+    assert.match(prompt.toString(), /NUL BYTE: approved requirements/);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }

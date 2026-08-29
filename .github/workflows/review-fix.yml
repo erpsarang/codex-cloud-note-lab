@@ -262,6 +262,8 @@ jobs:
               return data[:limit], truncated
 
           def strict_text(data, label):
+              if b"\0" in data:
+                  return f"[NUL BYTE: {label}; content omitted.]\n", True
               try:
                   return data.decode("utf-8"), False
               except UnicodeDecodeError:
@@ -387,16 +389,19 @@ jobs:
           )
           PY
 
-          printf 'REVIEW_INPUT_INCOMPLETE=%s\n' "$(cat "$RUNNER_TEMP/review-input-incomplete")" >> "$GITHUB_ENV"
-          delimiter="review_prompt_$(openssl rand -hex 32)"
-          while grep -Fxq "$delimiter" "$RUNNER_TEMP/review-prompt.txt"; do
+          review_input_incomplete="$(cat "$RUNNER_TEMP/review-input-incomplete")"
+          printf 'REVIEW_INPUT_INCOMPLETE=%s\n' "$review_input_incomplete" >> "$GITHUB_ENV"
+          if [ "$review_input_incomplete" = false ]; then
             delimiter="review_prompt_$(openssl rand -hex 32)"
-          done
-          {
-            printf 'REVIEW_PROMPT<<%s\n' "$delimiter"
-            cat "$RUNNER_TEMP/review-prompt.txt"
-            printf '\n%s\n' "$delimiter"
-          } >> "$GITHUB_ENV"
+            while grep -Fxq "$delimiter" "$RUNNER_TEMP/review-prompt.txt"; do
+              delimiter="review_prompt_$(openssl rand -hex 32)"
+            done
+            {
+              printf 'REVIEW_PROMPT<<%s\n' "$delimiter"
+              cat "$RUNNER_TEMP/review-prompt.txt"
+              printf '\n%s\n' "$delimiter"
+            } >> "$GITHUB_ENV"
+          fi
 
           rm -rf candidate-source
           rm -rf trusted-review-input "$RUNNER_TEMP/authorized" "$RUNNER_TEMP/review-prompt.txt" "$RUNNER_TEMP/review-input-incomplete"
