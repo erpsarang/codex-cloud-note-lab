@@ -191,8 +191,7 @@ jobs:
           echo 'stale=false' >> "$GITHUB_OUTPUT"
           # GitHub may temporarily report mergeable=null while recomputing after
           # a base update. Require mergeability only after ruling out stale evidence.
-          jq -e --arg base "$expected_base" \
-            '.base.sha == $base and .mergeable == true' <<<"$pr" >/dev/null
+          jq -e '.mergeable == true' <<<"$pr" >/dev/null
 
           # Build a commit with the exact tested result tree, then update the default
           # branch with a server-side compare-and-swap. Unlike the pull merge API's

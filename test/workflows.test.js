@@ -216,14 +216,19 @@ test('Trusted Merge treats legacy version-2 contracts as recovery count zero', a
   assert.match(trusted, /\[ "\$stale_recovery_count" -eq 0 \]/);
 });
 
-test('Trusted Merge handles a stale base before requiring resolved mergeability', async () => {
+test('Trusted Merge accepts revalidated evidence when an old PR base.sha trails the live ref', async () => {
   const trusted = await workflow('trusted-merge.yml');
   const staleCheck = trusted.indexOf('if [ "$current_base" != "$expected_base" ]; then');
-  const mergeableCheck = trusted.indexOf('.base.sha == $base and .mergeable == true');
+  const freshPath = trusted.slice(staleCheck, trusted.indexOf('# Build a commit with the exact tested result tree'));
+  const mergeableCheck = freshPath.indexOf("jq -e '.mergeable == true' <<<\"$pr\"");
 
   assert.ok(staleCheck >= 0);
-  assert.ok(mergeableCheck > staleCheck);
+  assert.ok(mergeableCheck >= 0);
   assert.doesNotMatch(trusted.slice(0, staleCheck), /\.mergeable == true/);
+  assert.doesNotMatch(freshPath, /\.base\.sha ==|--arg base/);
+  assert.match(freshPath, /\.head\.sha == \$head/);
+  assert.match(freshPath, /\.base\.ref == \$branch/);
+  assert.match(freshPath, /if \[ "\$current_base" != "\$expected_base" \]; then/);
 });
 
 test('Trusted Merge suppresses ON_HOLD only after revalidation dispatch succeeds', async () => {
