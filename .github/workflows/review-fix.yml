@@ -219,6 +219,7 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          allow-bot-users: github-actions[bot]
           permission-profile: "read-only"
           working-directory: ${{ github.workspace }}/trusted-review-input
           output-file: ${{ runner.temp }}/final-review.md

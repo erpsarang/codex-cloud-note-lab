@@ -79,6 +79,14 @@ test('AI action runs from a clean trusted directory without the candidate checko
   assert.doesNotMatch(ai, /working-directory:.*candidate-source/);
 });
 
+test('AI review allows only the GitHub Actions bot actor', async () => {
+  const review = await workflow('review-fix.yml');
+  const ai = review.slice(review.indexOf('  ai-review:'), review.indexOf('  merge-ready-contract:'));
+
+  assert.match(ai, /allow-bot-users: github-actions\[bot\]/);
+  assert.doesNotMatch(ai, /allow-bots: true/);
+});
+
 test('workflow identity uses the REST path and validates run source identity', async () => {
   for (const name of ['review-fix.yml', 'trusted-merge.yml']) {
     const contents = await workflow(name);
