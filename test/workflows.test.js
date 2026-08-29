@@ -142,6 +142,24 @@ test('publication provenance is immutable and authorizes the exact current head'
   assert.match(trusted, /\.publishedHeadSha==\$head/);
 });
 
+test('recovered publication attempts remain authoritative downstream after a rerun', async () => {
+  const review = await workflow('review-fix.yml');
+  const trusted = await workflow('trusted-merge.yml');
+
+  for (const contents of [review, trusted]) {
+    assert.doesNotMatch(contents, /\.run_attempt == \$attempt/);
+    assert.match(contents, /candidate-publication-\$[A-Za-z_]+-\$[A-Za-z_]+/);
+    assert.match(contents, /\.expired == false/);
+    assert.match(contents, /test "\$\(wc -l <<<"\$[A-Za-z_]+"\)" -eq 1/);
+    assert.match(contents, /\.publicationRunAttempt ?== ?\$attempt/);
+    assert.match(contents, /\.publicationWorkflow ?== ?\$workflow/);
+    assert.match(contents, /\.head_sha == \$sha and \.head_branch == \$ref/);
+  }
+
+  assert.match(review, /publicationRunAttempt:\$publicationRunAttempt/);
+  assert.match(trusted, /actions\/runs\/\$publication_run_id\/artifacts\?per_page=100/);
+});
+
 test('candidate execution, AI review, and contract creation use separate workflow or jobs', async () => {
   const ci = await workflow('ci.yml');
   const review = await workflow('review-fix.yml');
