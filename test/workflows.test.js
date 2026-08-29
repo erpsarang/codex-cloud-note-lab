@@ -230,6 +230,7 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /requirements_cap = 32 \* 1024/);
   assert.match(ai, /def git_limited\(limit, \*args\)/);
   assert.match(ai, /source\.read\(requirements_cap \+ 1\)/);
+  assert.match(ai, /requirements_oversized = len\(requirements\) > requirements_cap/);
   assert.match(ai, /16 \* 1024, "--literal-pathspecs", "diff"/);
   assert.match(ai, /diff content for \{path!r\} exceeded 16384 bytes/);
   assert.match(ai, /--no-ext-diff.*--no-textconv.*--no-renames/s);
@@ -251,8 +252,51 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /test ! -e trusted-review-input/);
   assert.match(ai, /test ! -e "\$RUNNER_TEMP\/review-prompt\.txt"/);
   assert.match(ai, /prompt: \$\{\{ env\.REVIEW_PROMPT \}\}/);
+  assert.match(ai, /if: env\.REVIEW_REQUIREMENTS_OVERSIZED != 'true'\n\s+uses: openai\/codex-action@v1/);
+  assert.match(ai, /if: env\.REVIEW_REQUIREMENTS_OVERSIZED == 'true'\n\s+run: printf '%s\\n' 'VERDICT: NON_PASS'/);
   const action = ai.slice(ai.indexOf('uses: openai/codex-action@v1'));
   assert.doesNotMatch(action, /candidate\.diff|candidate-requirements\.md|working-directory:/);
+});
+
+test('oversized approved requirements deterministically bypass AI and fail closed', async () => {
+  const review = await workflow('review-fix.yml');
+  const ai = review.slice(review.indexOf('  ai-review:'), review.indexOf('  merge-ready-contract:'));
+  const python = review.match(/          python3 - <<'PY'\n([\s\S]*?)\n          PY/)[1]
+    .split('\n').map((line) => line.slice(10)).join('\n');
+  const fixture = await mkdtemp(join(tmpdir(), 'review-oversized-requirements-'));
+  const candidate = join(fixture, 'candidate-source');
+  const trusted = join(fixture, 'trusted-review-input');
+
+  assert.match(ai, /REVIEW_REQUIREMENTS_OVERSIZED=%s/);
+  assert.match(ai, /"true\\n" if requirements_oversized else "false\\n"/);
+  assert.match(ai, /AI review only \(fail on every non-PASS verdict\)\n\s+if: env\.REVIEW_REQUIREMENTS_OVERSIZED != 'true'/);
+  assert.match(ai, /Fail closed when approved requirements exceed the review limit\n\s+if: env\.REVIEW_REQUIREMENTS_OVERSIZED == 'true'/);
+  assert.match(ai, /'VERDICT: NON_PASS' > "\$RUNNER_TEMP\/final-review\.md"/);
+  assert.match(ai, /last_nonempty != "VERDICT: PASS"/);
+
+  try {
+    await mkdir(candidate);
+    await mkdir(trusted);
+    const run = (...args) => spawnSync('git', args, { cwd: candidate, encoding: 'utf8' });
+    assert.equal(run('init', '-q').status, 0);
+    assert.equal(run('config', 'user.name', 'Regression Test').status, 0);
+    assert.equal(run('config', 'user.email', 'test@example.invalid').status, 0);
+    await writeFile(join(candidate, 'baseline.txt'), 'baseline\n');
+    assert.equal(run('add', '.').status, 0);
+    assert.equal(run('commit', '-qm', 'base').status, 0);
+    const revision = run('rev-parse', 'HEAD').stdout.trim();
+    await writeFile(join(trusted, 'candidate-requirements.md'), Buffer.alloc(32 * 1024 + 1, 65));
+
+    const result = spawnSync('python3', ['-c', python], {
+      cwd: fixture,
+      encoding: 'utf8',
+      env: { ...process.env, BASE_SHA: revision, HEAD_SHA: revision, RUNNER_TEMP: fixture },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(join(fixture, 'requirements-oversized'), 'utf8'), 'true\n');
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test('trusted prompt parses modified, added, deleted, multiple, binary, and empty diffs', async () => {

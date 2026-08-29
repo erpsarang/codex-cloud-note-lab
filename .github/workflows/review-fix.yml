@@ -298,8 +298,12 @@ jobs:
 
           with open("trusted-review-input/candidate-requirements.md", "rb") as source:
               requirements = source.read(requirements_cap + 1)
+          requirements_oversized = len(requirements) > requirements_cap
+          open(os.environ["RUNNER_TEMP"] + "/requirements-oversized", "w").write(
+              "true\n" if requirements_oversized else "false\n"
+          )
           requirements_note = ""
-          if len(requirements) > requirements_cap:
+          if requirements_oversized:
               requirements = requirements[:requirements_cap]
               requirements_note = ("\n[TRUNCATED: approved requirements exceeded 32768 bytes; "
                                    "remaining byte range omitted.]\n")
@@ -368,6 +372,7 @@ jobs:
           open(os.environ["RUNNER_TEMP"] + "/review-prompt.txt", "wb").write(encoded)
           PY
 
+          printf 'REVIEW_REQUIREMENTS_OVERSIZED=%s\n' "$(cat "$RUNNER_TEMP/requirements-oversized")" >> "$GITHUB_ENV"
           delimiter="review_prompt_$(openssl rand -hex 32)"
           while grep -Fxq "$delimiter" "$RUNNER_TEMP/review-prompt.txt"; do
             delimiter="review_prompt_$(openssl rand -hex 32)"
@@ -379,12 +384,14 @@ jobs:
           } >> "$GITHUB_ENV"
 
           rm -rf candidate-source
-          rm -rf trusted-review-input "$RUNNER_TEMP/authorized" "$RUNNER_TEMP/review-prompt.txt"
+          rm -rf trusted-review-input "$RUNNER_TEMP/authorized" "$RUNNER_TEMP/review-prompt.txt" "$RUNNER_TEMP/requirements-oversized"
           test ! -e candidate-source
           test ! -e trusted-review-input
           test ! -e "$RUNNER_TEMP/authorized"
           test ! -e "$RUNNER_TEMP/review-prompt.txt"
+          test ! -e "$RUNNER_TEMP/requirements-oversized"
       - name: AI review only (fail on every non-PASS verdict)
+        if: env.REVIEW_REQUIREMENTS_OVERSIZED != 'true'
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -392,6 +399,9 @@ jobs:
           permission-profile: ":read-only"
           output-file: ${{ runner.temp }}/final-review.md
           prompt: ${{ env.REVIEW_PROMPT }}
+      - name: Fail closed when approved requirements exceed the review limit
+        if: env.REVIEW_REQUIREMENTS_OVERSIZED == 'true'
+        run: printf '%s\n' 'VERDICT: NON_PASS' > "$RUNNER_TEMP/final-review.md"
       - name: Validate and record review result
         env:
           HEAD_SHA: ${{ needs.authorize.outputs.head }}
