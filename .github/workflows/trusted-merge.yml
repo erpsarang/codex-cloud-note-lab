@@ -221,9 +221,14 @@ jobs:
           cd "$RUNNER_TEMP/atomic-merge"
           git config core.hooksPath /dev/null
           git remote add origin "https://github.com/$GH_REPO.git"
-          gh auth setup-git
+          # Bind the environment-protected final merge authority directly to
+          # this isolated repository's network commands. Do not delegate token
+          # selection to gh's process-global credential helper configuration.
+          test -n "$GH_TOKEN"
+          merge_auth_header="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
           phase=exact-object-fetch
-          git fetch --no-tags origin "$expected_base" "$expected_head"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $merge_auth_header" \
+            fetch --no-tags origin "$expected_base" "$expected_head"
           phase=prospective-tree-recalculation
           actual_tree="$(git merge-tree --write-tree "$expected_base" "$expected_head")"
           [ "$actual_tree" = "$expected_tree" ]
@@ -233,7 +238,8 @@ jobs:
                 -c user.email='self-improvement@users.noreply.github.com' \
                 commit-tree "$expected_tree" -p "$expected_base" -p "$expected_head")"
           phase=atomic-default-branch-push
-          git push origin "$merge_commit:refs/heads/$DEFAULT_BRANCH" \
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $merge_auth_header" \
+            push origin "$merge_commit:refs/heads/$DEFAULT_BRANCH" \
             --force-with-lease="refs/heads/$DEFAULT_BRANCH:$expected_base"
 
           # PR state is an eventually consistent projection of the Git ref update.
