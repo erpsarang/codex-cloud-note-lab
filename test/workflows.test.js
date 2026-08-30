@@ -25,64 +25,27 @@ test('automatic Review accepts only the existing repository dispatch payload', a
   assert.match(authorize, /\[ "\$actual" = "\$fingerprint" \]/);
 });
 
-test('recovery uses a trusted issues event and discovers the publication coordinates', async () => {
-  const dispatcher = await workflow('review-recovery-dispatch.yml');
+test('removed recovery workflow and metadata stay absent', async () => {
+  const { access } = await import('node:fs/promises');
+  const workflows = await Promise.all([
+    workflow('approval-automation.yml'),
+    workflow('review-fix.yml'),
+    workflow('trusted-merge.yml'),
+  ]);
 
-  assert.match(dispatcher, /issues:\n    types: \[labeled\]/);
-  assert.match(dispatcher, /github\.event\.label\.name == 'review-retry'/);
-  assert.match(dispatcher, /EVENT_LABEL: \$\{\{ github\.event\.label\.name \}\}/);
-  assert.match(dispatcher, /\.state == "open"/);
-  assert.match(dispatcher, /index\("approved"\) != null/);
-  assert.match(dispatcher, /index\("review-retry"\) != null/);
-  assert.match(dispatcher, /codex\/self-improvement-\$CANDIDATE/);
-  assert.match(dispatcher, /self-improvement-candidate:\$CANDIDATE/);
-  assert.match(dispatcher, /candidate-publication-\$run_id-\$artifact_attempt/);
-  assert.match(dispatcher, /\.publicationRunId == \$run/);
-  assert.match(dispatcher, /\.publishedHeadSha == \$head/);
-  assert.match(dispatcher, /\.requirementsFingerprint == \$fingerprint/);
-  assert.match(dispatcher, /current_pr=.*pulls\/\$pr_number/);
-  assert.match(dispatcher, /event_type=self-improvement-review/);
-  assert.match(dispatcher, /permissions:\n      actions: read\n      contents: write\n      issues: read\n      pull-requests: read/);
-  assert.doesNotMatch(dispatcher, /actions\/checkout|OPENAI_API_KEY|secrets\.|SELF_IMPROVEMENT_MERGE_TOKEN|pulls\/[^\n]+\/merge|gh pr merge|git push/);
+  await assert.rejects(access(new URL('../.github/workflows/review-recovery-dispatch.yml', import.meta.url)));
+  for (const contents of workflows) {
+    assert.doesNotMatch(contents, /review-retry|stale_recovery_|staleRecoveryCount/);
+  }
+  assert.doesNotMatch(workflows[2], /event_type=self-improvement-review/);
 });
 
-test('no recovery workflow is branch-selectable or executes candidate code', async () => {
-  const dispatcher = await workflow('review-recovery-dispatch.yml');
-  const review = await workflow('review-fix.yml');
-
-  assert.doesNotMatch(dispatcher, /workflow_dispatch:/);
-  assert.doesNotMatch(review, /workflow_dispatch:/);
-  assert.doesNotMatch(dispatcher, /actions\/checkout|npm (?:ci|install|test)|openai\/codex-action/);
-  assert.doesNotMatch(dispatcher, /secrets\.|OPENAI_API_KEY|MERGE_TOKEN/);
-  assert.match(dispatcher, /actions: read/);
-  assert.match(dispatcher, /issues: read/);
-  assert.match(dispatcher, /pull-requests: read/);
-  assert.match(dispatcher, /contents: write/);
-});
-
-test('recovery searches retained artifacts from every publication run attempt', async () => {
-  const dispatcher = await workflow('review-recovery-dispatch.yml');
-
-  assert.match(dispatcher, /actions\/runs\/\$run_id\/artifacts\?per_page=100/);
-  assert.match(dispatcher, /\.expired == false/);
-  assert.match(dispatcher, /artifact_attempt="\$\{artifact_name#candidate-publication-\$run_id-\}"/);
-  assert.match(dispatcher, /"candidate-publication-\$run_id-\$artifact_attempt"/);
-  assert.match(dispatcher, /--argjson attempt "\$artifact_attempt"/);
-  assert.match(dispatcher, /\.publicationRunAttempt == \$attempt/);
-  assert.match(dispatcher, /found="\$run_id:\$artifact_attempt"/);
-  assert.doesNotMatch(dispatcher, /artifact_name="candidate-publication-\$run_id-\$run_attempt"/);
-  assert.match(dispatcher, /Ambiguous publication provenance/);
-  assert.match(dispatcher, /No retained immutable publication artifact matches/);
-  assert.match(dispatcher, /artifact retention period; it is not bypassed/);
-});
-
-test('Review recovery preserves the read-only boundary and has no merge authority', async () => {
+test('Review remains read-only and has no merge authority', async () => {
   const review = await workflow('review-fix.yml');
 
   assert.match(review, /permissions: \{\}/);
   assert.match(review, /allow-bot-users: github-actions\[bot\]/);
   assert.match(review, /permission-profile: ":read-only"/);
-  assert.doesNotMatch(review, /allow-bots: true/);
   assert.doesNotMatch(review, /SELF_IMPROVEMENT_MERGE_TOKEN|pulls\/[^\n]+\/merge|gh pr merge|git push/);
 });
 
@@ -119,6 +82,7 @@ test('Review obtains exact merge objects and diagnoses every fail-closed merge-t
   assert.doesNotMatch(validation, /git config|credential\.helper/);
   assert.match(validation, /required Git object missing: unable to fetch \$label commit \$sha/);
   assert.match(validation, /git merge-tree --write-tree --messages "\$BASE_SHA" "\$HEAD_SHA"/);
+  assert.match(validation, /git diff --name-only "\$BASE_SHA" "\$HEAD_SHA" \| grep -E '\^\\\.github\/\(workflows\|actions\)\/'/);
   assert.match(validation, /actual merge conflict between exact base/);
   assert.match(validation, /git merge-tree invocation failure \(exit \$merge_status\)/);
   assert.match(validation, /\[ "\$merge_status" -eq 0 \].*result_tree.*\{40,64\}/s);
@@ -230,35 +194,48 @@ test('Trusted Merge re-authenticates the dispatched Review run and exact artifac
   assert.match(trusted, /\.reviewWorkflowSourceSha == \$source/);
 });
 
-test('Trusted Merge fails closed on stale evidence and requests one bounded revalidation', async () => {
+test('stale after Review is obsolete and never dispatches recovery', async () => {
   const trusted = await workflow('trusted-merge.yml');
   const stale = trusted.slice(
-    trusted.indexOf('# Never merge evidence tested against a stale base.'),
+    trusted.indexOf('# Never merge evidence tested against a stale implementation base.'),
     trusted.indexOf('# Build a commit with the exact tested result tree'),
-  );
-  const recovery = trusted.slice(
-    trusted.indexOf('- name: Request one current-base revalidation'),
-    trusted.indexOf('- name: Put a changed or unverifiable candidate ON_HOLD'),
   );
 
   assert.match(stale, /for snapshot_attempt in 1 2 3; do/);
-  assert.match(stale, /base_before=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
-  assert.match(stale, /pr=.*pulls\/\$pr_number/);
-  assert.match(stale, /base_after=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
   assert.match(stale, /if \[ "\$current_base" != "\$expected_base" \]; then/);
-  assert.match(stale, /\[ "\$stale_recovery_count" -eq 0 \]/);
-  assert.match(stale, /\.draft == false and \.head\.sha == \$head/);
-  assert.doesNotMatch(stale.slice(0, stale.indexOf("echo 'stale=false'")), /\.base\.sha == \$base/);
+  assert.match(stale, /obsolete=true/);
   assert.match(stale, /exit 0/);
   assert.doesNotMatch(stale, /git push|commit-tree/);
-  assert.equal((recovery.match(/event_type=self-improvement-review/g) || []).length, 1);
-  assert.match(recovery, /client_payload\[stale_recovery_count\]=1/);
-  assert.match(recovery, /client_payload\[stale_recovery_base_sha\]=\$CURRENT_BASE/);
-  assert.match(recovery, /client_payload\[stale_recovery_head_sha\]=\$HEAD_SHA/);
-  assert.doesNotMatch(recovery, /SELF_IMPROVEMENT_MERGE_TOKEN|git push|pulls\/[^\n]+\/merge/);
+  assert.match(trusted, /name: Mark terminal candidate obsolete/);
+  assert.match(trusted, /--add-label obsolete/);
+  assert.doesNotMatch(trusted, /event_type=self-improvement-review/);
 });
 
-test('Trusted Merge obtains a bounded coherent default-branch and PR snapshot', async () => {
+test('Trusted Merge terminally obsoletes authenticated version-1 publications during rollout', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+  const merge = trusted.slice(
+    trusted.indexOf('- name: Validate trusted state and merge exact head'),
+    trusted.indexOf('- name: Mark terminal candidate obsolete'),
+  );
+  const commonBinding = merge.indexOf("'(.version == 1 or .version == 2) and");
+  const runBinding = merge.indexOf("'.head_sha == $sha and .head_branch == $ref'");
+  const versionOne = merge.indexOf('if [ "$publication_version" = 1 ]; then');
+  const obsolete = merge.indexOf("printf 'obsolete=true\\ncandidate=%s\\n'", versionOne);
+  const versionTwo = merge.indexOf('[ "$publication_version" = 2 ]', versionOne);
+  const mergeTokenAction = merge.indexOf('git push origin', versionTwo);
+
+  assert.ok(commonBinding >= 0 && runBinding > commonBinding && versionOne > runBinding);
+  assert.match(merge, /\.candidate==\$candidate and \.pullRequest==\$pr/);
+  assert.match(merge, /\.publicationRunId==\$run and\n\s+\.publicationRunAttempt==\$attempt/);
+  assert.ok(obsolete > versionOne && versionTwo > obsolete && mergeTokenAction > versionTwo);
+  assert.match(merge.slice(versionOne, versionTwo), /authenticated v1/);
+  assert.match(merge.slice(obsolete, versionTwo), /exit 0/);
+  assert.doesNotMatch(merge.slice(versionOne, versionTwo), /implementationBaseSha|git push|gh api --method (?:PUT|POST|PATCH)/);
+  assert.match(merge.slice(versionTwo), /\.implementationBaseSha == \$base/);
+  assert.match(trusted, /if: steps\.merge\.outputs\.obsolete == 'true'/);
+});
+
+test('Trusted Merge obtains a coherent default-branch snapshot', async () => {
   const trusted = await workflow('trusted-merge.yml');
   const snapshot = trusted.indexOf('for snapshot_attempt in 1 2 3; do');
   const baseBefore = trusted.indexOf('base_before="$(gh api', snapshot);
@@ -266,119 +243,55 @@ test('Trusted Merge obtains a bounded coherent default-branch and PR snapshot', 
   const baseAfter = trusted.indexOf('base_after="$(gh api', refreshedPr);
   const staleCheck = trusted.indexOf('if [ "$current_base" != "$expected_base" ]; then', baseAfter);
 
-  assert.ok(snapshot >= 0);
-  assert.ok(baseBefore > snapshot);
-  assert.ok(refreshedPr > baseBefore);
-  assert.ok(baseAfter > refreshedPr);
-  assert.ok(staleCheck > baseAfter);
-  const coherent = trusted.slice(baseAfter, staleCheck);
-  assert.match(coherent, /\[ "\$base_before" = "\$base_after" \]/);
-  assert.doesNotMatch(coherent, /\.base\.sha/);
-  assert.match(coherent, /current_base="\$base_after"/);
-  assert.match(coherent, /\[ "\$snapshot_ready" = true \]/);
+  assert.ok(snapshot >= 0 && baseBefore > snapshot && refreshedPr > baseBefore && baseAfter > refreshedPr && staleCheck > baseAfter);
+  assert.match(trusted.slice(baseAfter, staleCheck), /\[ "\$base_before" = "\$base_after" \]/);
 });
 
-test('Trusted Merge recovers an old PR when its base.sha trails the current branch ref', async () => {
-  const trusted = await workflow('trusted-merge.yml');
-  const snapshot = trusted.slice(
-    trusted.indexOf('for snapshot_attempt in 1 2 3; do'),
-    trusted.indexOf("echo 'stale=false'"),
+test('Review rejects stale publications against the exact implementation base', async () => {
+  const review = await workflow('review-fix.yml');
+  const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
+  const provenanceBinding = authorize.indexOf("'(.version == 1 or .version == 2) and");
+  const staleCheck = authorize.indexOf('if [ "$current_base" != "$implementation_base" ]; then');
+  const obsoleteLabel = authorize.indexOf(
+    'gh issue edit "$candidate" --repo "$GH_REPO" --add-label obsolete',
+    staleCheck,
   );
 
-  // A long-lived PR may retain expected_base in base.sha after the branch ref
-  // advances. Recovery must be selected solely by current_base vs expected_base.
-  assert.match(snapshot, /if \[ "\$base_before" = "\$base_after" \]; then/);
-  assert.match(snapshot, /if \[ "\$current_base" != "\$expected_base" \]; then/);
-  assert.match(snapshot, /\.state == "open" and \.draft == false and \.head\.sha == \$head/);
-  assert.match(snapshot, /\.base\.ref == \$branch/);
-  assert.doesNotMatch(snapshot, /\.base\.sha/);
-});
-
-test('Trusted Merge treats legacy version-2 contracts as recovery count zero', async () => {
-  const trusted = await workflow('trusted-merge.yml');
-
-  assert.match(trusted, /\(\.staleRecoveryCount \/\/ 0\) == 0/);
-  assert.match(trusted, /stale_recovery_count="\$\(jq -r '\(\.staleRecoveryCount \/\/ 0\)'/);
-  assert.match(trusted, /\[ "\$stale_recovery_count" -eq 0 \]/);
-});
-
-test('Trusted Merge accepts revalidated evidence when an old PR base.sha trails the live ref', async () => {
-  const trusted = await workflow('trusted-merge.yml');
-  const staleCheck = trusted.indexOf('if [ "$current_base" != "$expected_base" ]; then');
-  const freshPath = trusted.slice(staleCheck, trusted.indexOf('# Build a commit with the exact tested result tree'));
-  const mergeableCheck = freshPath.indexOf("jq -e '.mergeable == true' <<<\"$pr\"");
-
-  assert.ok(staleCheck >= 0);
-  assert.ok(mergeableCheck >= 0);
-  assert.doesNotMatch(trusted.slice(0, staleCheck), /\.mergeable == true/);
-  assert.doesNotMatch(freshPath, /\.base\.sha ==|--arg base/);
-  assert.match(freshPath, /\.head\.sha == \$head/);
-  assert.match(freshPath, /\.base\.ref == \$branch/);
-  assert.match(freshPath, /if \[ "\$current_base" != "\$expected_base" \]; then/);
-});
-
-test('Trusted Merge suppresses ON_HOLD only after revalidation dispatch succeeds', async () => {
-  const trusted = await workflow('trusted-merge.yml');
-  const recovery = trusted.slice(trusted.indexOf('- name: Request one current-base revalidation'));
-
-  assert.match(recovery, /id: revalidate/);
-  assert.match(recovery, /failure\(\).*steps\.merge\.outputs\.stale == 'true'.*steps\.revalidate\.outcome == 'success'/);
-});
-
-test('revalidated Review binds the current base and exact candidate head into new evidence', async () => {
-  const review = await workflow('review-fix.yml');
-  const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
-  const contract = review.slice(review.indexOf('  merge-ready-contract:'));
-
-  assert.match(authorize, /case "\$STALE_RECOVERY_COUNT" in/);
-  assert.match(authorize, /current_base=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);
-  assert.match(authorize, /\.state == "open" and \.draft == false and \.head\.sha == \$head and \.base\.ref == \$branch/);
-  assert.match(authorize, /\[ "\$current_base" != "\$STALE_RECOVERY_BASE_SHA" \]/);
-  assert.match(authorize, /\[ "\$published_head" != "\$STALE_RECOVERY_HEAD_SHA" \]/);
-  assert.doesNotMatch(authorize, /\.base\.sha/);
-  assert.match(authorize, /staleRecoveryCount:\$staleRecoveryCount/);
-  assert.match(contract, /staleRecoveryCount:\$b\.staleRecoveryCount/);
-  assert.match(contract, /testedBaseSha:\$t\.testedBaseSha,testedHeadSha:\$t\.testedHeadSha/);
-  assert.match(contract, /finalReviewSha:\$r\.finalReviewSha/);
-});
-
-test('bounded stale recovery authorizes against the live default-branch ref', async () => {
-  const review = await workflow('review-fix.yml');
-  const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
-
   assert.match(authorize, /issues: write/);
-  assert.match(authorize, /DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}/);
-  assert.match(authorize, /current_base="\$\(gh api "repos\/\$GH_REPO\/git\/ref\/heads\/\$DEFAULT_BRANCH" --jq \.object\.sha\)"/);
-  assert.match(authorize, /\[ "\$current_base" != "\$STALE_RECOVERY_BASE_SHA" \]/);
-  assert.match(authorize, /--arg head "\$published_head" --arg base "\$current_base"/);
-  assert.match(authorize, /"\$candidate" "\$fingerprint" "\$published_head" "\$current_base"/);
-  assert.doesNotMatch(authorize, /\.base\.sha/);
-  assert.match(authorize, /gh label create ON_HOLD[^\n]*--repo "\$GH_REPO"/);
-  assert.match(authorize, /gh issue edit "\$candidate"[^\n]*--add-label ON_HOLD/);
-  assert.match(authorize, /exit 1/);
+  assert.match(authorize, /implementation_base="\$\(jq -r \.implementationBaseSha/);
+  assert.match(authorize, /if \[ "\$current_base" != "\$implementation_base" \]; then/);
+  assert.match(authorize, /Candidate is obsolete/);
+  assert.match(authorize, /gh label create obsolete[^\n]*--repo "\$GH_REPO"/);
+  assert.ok(provenanceBinding >= 0 && staleCheck > provenanceBinding && obsoleteLabel > staleCheck);
+  assert.match(authorize.slice(staleCheck, obsoleteLabel), /Candidate is obsolete/);
+  assert.match(authorize.slice(obsoleteLabel), /exit 1/);
+  assert.match(authorize, /--arg head "\$published_head" --arg base "\$implementation_base"/);
+  assert.doesNotMatch(authorize, /review-retry|recovery|git (?:rebase|push)|gh pr update/);
 });
 
-test('every failed bounded recovery run puts its immutable candidate ON_HOLD', async () => {
+test('Review terminally obsoletes authenticated version-1 publications during rollout', async () => {
   const review = await workflow('review-fix.yml');
-  const hold = review.slice(review.indexOf('  hold-failed-stale-recovery:'));
+  const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
+  const commonBinding = authorize.indexOf("'(.version == 1 or .version == 2) and");
+  const runBinding = authorize.indexOf("'.head_sha == $sha and .head_branch == $ref'");
+  const versionOne = authorize.indexOf('if [ "$version" = 1 ]; then');
+  const obsolete = authorize.indexOf('gh issue edit "$candidate" --repo "$GH_REPO" --add-label obsolete', versionOne);
+  const versionTwo = authorize.indexOf('[ "$version" = 2 ]', versionOne);
 
-  assert.match(hold, /needs: \[authorize, validate-test, ai-review, merge-ready-contract\]/);
-  assert.match(hold, /if: \$\{\{ always\(\).*stale_recovery_count == 1/);
-  for (const job of ['authorize', 'validate-test', 'ai-review', 'merge-ready-contract']) {
-    assert.match(hold, new RegExp(`needs\\.${job.replace('-', '\\-')}\\.result != 'success'`));
-  }
-  assert.match(hold, /actions: read\n      issues: write/);
-  assert.match(hold, /candidate-publication-\$PUBLICATION_RUN_ID-\$PUBLICATION_RUN_ATTEMPT/);
-  assert.match(hold, /\.pullRequest == \$pr and \.publicationRunId == \$run/);
-  assert.match(hold, /gh label create ON_HOLD[^\n]*--repo "\$GH_REPO"/);
-  assert.match(hold, /gh issue edit "\$candidate"[^\n]*--add-label ON_HOLD/);
-  assert.doesNotMatch(hold, /SELF_IMPROVEMENT_MERGE_TOKEN|contents: write|git push|gh pr merge/);
+  assert.ok(commonBinding >= 0 && runBinding > commonBinding && versionOne > runBinding);
+  assert.match(authorize, /\.pullRequest == \$pr and \.publicationRunId == \$run/);
+  assert.match(authorize, /\.publicationRunAttempt == \$attempt and \.publicationWorkflow == \$workflow/);
+  assert.match(authorize.slice(versionOne, versionTwo), /authenticated version 1 publication/);
+  assert.ok(obsolete > versionOne && versionTwo > obsolete);
+  assert.match(authorize.slice(obsolete, versionTwo), /exit 1/);
+  assert.match(authorize.slice(versionTwo), /implementationBaseSha/);
+  assert.doesNotMatch(authorize.slice(versionOne, versionTwo), /implementationBaseSha|review-retry|recovery|git (?:rebase|push)|gh pr update/);
 });
 
 test('fresh Trusted Merge path retains atomic compare-and-swap publication', async () => {
   const trusted = await workflow('trusted-merge.yml');
 
-  assert.match(trusted, /echo 'stale=false' >> "\$GITHUB_OUTPUT"/);
+  assert.match(trusted, /echo 'obsolete=false' >> "\$GITHUB_OUTPUT"/);
   assert.match(trusted, /actual_tree=.*merge-tree --write-tree "\$expected_base" "\$expected_head"/);
   assert.match(trusted, /\[ "\$actual_tree" = "\$expected_tree" \]/);
   assert.match(trusted, /--force-with-lease="refs\/heads\/\$DEFAULT_BRANCH:\$expected_base"/);
@@ -408,7 +321,7 @@ test('Review accepts only the exact CI run created by its trusted dispatch', asy
   assert.doesNotMatch(review, /if length == 1 then \.\[0\] else empty end/);
 });
 
-test('recovery learns nested CI source from the nonce-matched run without a ref pre-read race', async () => {
+test('Review learns nested CI source from the nonce-matched run without a ref pre-read race', async () => {
   const review = await workflow('review-fix.yml');
   const validation = review.slice(review.indexOf('  validate-test:'), review.indexOf('  ai-review:'));
 
@@ -447,14 +360,19 @@ test('publication provenance is immutable and authorizes the exact current head'
   const trusted = await workflow('trusted-merge.yml');
 
   assert.match(publication, /candidate-publication-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
+  assert.match(publication, /IMPLEMENTATION_BASE_SHA: \$\{\{ needs\.implement\.outputs\.base_sha \}\}/);
+  assert.match(publication, /implementationBaseSha:\$implementationBase,publishedHeadSha:\$head/);
   assert.match(publication, /publishedHeadSha:\$head,publicationWorkflow:\$workflow/);
+  assert.match(review, /\.implementationBaseSha \| test\("\^\[0-9a-f\]\{40\}\$"\)/);
+  assert.match(trusted, /\.publishedHeadSha==\$head/);
+  assert.match(trusted, /\.implementationBaseSha == \$base/);
   assert.match(review, /\.head\.sha == \$head/);
   assert.doesNotMatch(review, /startsWith\(github\.event\.pull_request\.head\.ref/);
   assert.match(trusted, /publication-provenance\.json/);
   assert.match(trusted, /\.publishedHeadSha==\$head/);
 });
 
-test('recovered publication attempts remain authoritative downstream after a rerun', async () => {
+test('exact publication attempts remain authoritative downstream after a rerun', async () => {
   const review = await workflow('review-fix.yml');
   const trusted = await workflow('trusted-merge.yml');
 
@@ -474,7 +392,6 @@ test('recovered publication attempts remain authoritative downstream after a rer
 
 test('publication workflow authority requires the exact full branch ref', async () => {
   const review = await workflow('review-fix.yml');
-  const recovery = await workflow('review-recovery-dispatch.yml');
   const trusted = await workflow('trusted-merge.yml');
   const repository = 'owner/repository';
   const branch = 'main';
@@ -485,9 +402,8 @@ test('publication workflow authority requires the exact full branch ref', async 
   assert.notEqual(expected, 'owner/repository/.github/workflows/approval-automation.yml@refs/heads/release');
 
   assert.match(review, /expected_workflow="\$GITHUB_REPOSITORY\/.github\/workflows\/approval-automation\.yml@refs\/heads\/\$source_branch"/);
-  assert.match(recovery, /expected_workflow="\$GH_REPO\/.github\/workflows\/approval-automation\.yml@refs\/heads\/\$DEFAULT_BRANCH"/);
   assert.match(trusted, /expected_publication_workflow="\$GH_REPO\/.github\/workflows\/approval-automation\.yml@refs\/heads\/\$publication_source_branch"/);
-  for (const contents of [review, recovery, trusted]) {
+  for (const contents of [review, trusted]) {
     assert.match(contents, /\.publicationWorkflow ?== ?\$workflow/);
     assert.doesNotMatch(contents, /publicationWorkflow[^\n]*starts(?:with|With)|publicationWorkflow[^\n]*contains/);
   }
@@ -917,7 +833,7 @@ test('an existing unproven implementation branch fails closed', async () => {
   assert.doesNotMatch(publication, /missing pull request will be recovered/);
 });
 
-test('Trusted Merge detects a changed base after revalidating the CI run', async () => {
+test('Trusted Merge detects a changed base after authenticating the CI run', async () => {
   const trusted = await workflow('trusted-merge.yml');
 
   assert.match(trusted, /base_before=.*git\/ref\/heads\/\$DEFAULT_BRANCH/);

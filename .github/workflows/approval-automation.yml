@@ -225,6 +225,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          IMPLEMENTATION_BASE_SHA: ${{ needs.implement.outputs.base_sha }}
         run: |
           body_file="$RUNNER_TEMP/pull-request-body.md"
           cat > "$body_file" <<EOF
@@ -250,12 +251,13 @@ jobs:
           published_head="$(gh api "repos/$GH_REPO/pulls/$pr_number" --jq .head.sha)"
           requirements_fingerprint="$(gh api "repos/$GH_REPO/issues/$ISSUE_NUMBER" --jq .body | sha256sum | cut -d' ' -f1)"
           jq -n -S --argjson candidate "$ISSUE_NUMBER" --arg fingerprint "$requirements_fingerprint" \
+            --arg implementationBase "$IMPLEMENTATION_BASE_SHA" \
             --arg head "$published_head" --arg workflow "$GITHUB_WORKFLOW_REF" \
             --arg sourceSha "$GITHUB_SHA" --arg sourceBranch "$GITHUB_REF_NAME" \
             --argjson runId "$GITHUB_RUN_ID" --argjson runAttempt "$GITHUB_RUN_ATTEMPT" \
             --argjson pr "$pr_number" \
-            '{version:1,candidate:$candidate,requirementsFingerprint:$fingerprint,
-              publishedHeadSha:$head,publicationWorkflow:$workflow,
+            '{version:2,candidate:$candidate,requirementsFingerprint:$fingerprint,
+              implementationBaseSha:$implementationBase,publishedHeadSha:$head,publicationWorkflow:$workflow,
               publicationSourceSha:$sourceSha,publicationSourceBranch:$sourceBranch,
               publicationRunId:$runId,publicationRunAttempt:$runAttempt,pullRequest:$pr}' \
             > "$RUNNER_TEMP/publication-provenance.json"

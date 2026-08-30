@@ -12,9 +12,6 @@ env:
   REVIEW_PR_NUMBER: ${{ github.event.client_payload.pr_number }}
   REVIEW_PUBLICATION_RUN_ID: ${{ github.event.client_payload.publication_run_id }}
   REVIEW_PUBLICATION_RUN_ATTEMPT: ${{ github.event.client_payload.publication_run_attempt }}
-  REVIEW_RECOVERY_COUNT: ${{ github.event.client_payload.stale_recovery_count || '0' }}
-  REVIEW_RECOVERY_BASE_SHA: ${{ github.event.client_payload.stale_recovery_base_sha || '' }}
-  REVIEW_RECOVERY_HEAD_SHA: ${{ github.event.client_payload.stale_recovery_head_sha || '' }}
 
 concurrency:
   group: review-${{ github.event.client_payload.pr_number }}
@@ -38,7 +35,6 @@ jobs:
       pr: ${{ steps.bind.outputs.pr }}
       publication_run_id: ${{ steps.bind.outputs.publication_run_id }}
       publication_run_attempt: ${{ steps.bind.outputs.publication_run_attempt }}
-      stale_recovery_count: ${{ steps.bind.outputs.stale_recovery_count }}
     steps:
       - name: Download provenance from the named publication run
         env:
@@ -70,9 +66,6 @@ jobs:
           PUBLICATION_RUN_ID: ${{ env.REVIEW_PUBLICATION_RUN_ID }}
           PUBLICATION_RUN_ATTEMPT: ${{ env.REVIEW_PUBLICATION_RUN_ATTEMPT }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          STALE_RECOVERY_COUNT: ${{ env.REVIEW_RECOVERY_COUNT }}
-          STALE_RECOVERY_BASE_SHA: ${{ env.REVIEW_RECOVERY_BASE_SHA }}
-          STALE_RECOVERY_HEAD_SHA: ${{ env.REVIEW_RECOVERY_HEAD_SHA }}
         run: |
           set -euo pipefail
           provenance="$(cat "$RUNNER_TEMP/provenance.json")"
@@ -80,57 +73,61 @@ jobs:
           source_sha="$(jq -r .publicationSourceSha <<<"$provenance")"
           source_branch="$(jq -r .publicationSourceBranch <<<"$provenance")"
           expected_workflow="$GITHUB_REPOSITORY/.github/workflows/approval-automation.yml@refs/heads/$source_branch"
+          version="$(jq -r '.version // empty' <<<"$provenance")"
           jq -e --argjson pr "$PR_NUMBER" --argjson run "$PUBLICATION_RUN_ID" \
             --argjson attempt "$PUBLICATION_RUN_ATTEMPT" \
             --arg workflow "$expected_workflow" \
-            '.version == 1 and .pullRequest == $pr and .publicationRunId == $run and
+            '(.version == 1 or .version == 2) and
+             (.candidate | type == "number" and . > 0 and floor == .) and
+             (.requirementsFingerprint | test("^[0-9a-f]{64}$")) and
+             (.publicationSourceSha | test("^[0-9a-f]{40}$")) and
+             (.publicationSourceBranch | type == "string" and length > 0) and
+             .pullRequest == $pr and .publicationRunId == $run and
              .publicationRunAttempt == $attempt and .publicationWorkflow == $workflow and
              (.publishedHeadSha | test("^[0-9a-f]{40}$"))' <<<"$provenance" >/dev/null
           jq -e --arg sha "$source_sha" --arg ref "$source_branch" \
             '.head_sha == $sha and .head_branch == $ref' <<<"$publication_run" >/dev/null
           candidate="$(jq -r .candidate <<<"$provenance")"
+          if [ "$version" = 1 ]; then
+            echo "Candidate is obsolete: authenticated version 1 publication predates implementation-base provenance" >&2
+            gh label create obsolete --repo "$GH_REPO" --color 6E7781 \
+              --description 'Candidate was superseded before review completed' --force
+            gh issue edit "$candidate" --repo "$GH_REPO" --add-label obsolete
+            exit 1
+          fi
+          [ "$version" = 2 ]
+          jq -e '(.implementationBaseSha | test("^[0-9a-f]{40}$"))' <<<"$provenance" >/dev/null
           fingerprint="$(jq -r .requirementsFingerprint <<<"$provenance")"
+          implementation_base="$(jq -r .implementationBaseSha <<<"$provenance")"
           published_head="$(jq -r .publishedHeadSha <<<"$provenance")"
           pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
           current_base="$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)"
           [[ "$current_base" =~ ^[0-9a-f]{40}$ ]]
+          if [ "$current_base" != "$implementation_base" ]; then
+            echo "Candidate is obsolete: default branch moved from implementation base $implementation_base to $current_base" >&2
+            gh label create obsolete --repo "$GH_REPO" --color 6E7781 \
+              --description 'Candidate was superseded before review completed' --force
+            gh issue edit "$candidate" --repo "$GH_REPO" --add-label obsolete
+            exit 1
+          fi
           jq -e --arg head "$published_head" --arg branch "$DEFAULT_BRANCH" \
             '.state == "open" and .draft == false and .head.sha == $head and .base.ref == $branch' \
             <<<"$pr" >/dev/null
-          case "$STALE_RECOVERY_COUNT" in
-            0) ;;
-            1)
-              [[ "$STALE_RECOVERY_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-              [[ "$STALE_RECOVERY_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
-              if [ "$current_base" != "$STALE_RECOVERY_BASE_SHA" ] || \
-                [ "$published_head" != "$STALE_RECOVERY_HEAD_SHA" ]; then
-                # The single bounded recovery is no longer bindable. Fail closed
-                # and make the need for manual investigation explicit.
-                gh label create ON_HOLD --repo "$GH_REPO" --color B60205 \
-                  --description 'Automated merge is paused pending investigation' --force
-                gh issue edit "$candidate" --repo "$GH_REPO" --add-label ON_HOLD
-                exit 1
-              fi
-              ;;
-            *) exit 1 ;;
-          esac
           issue="$(gh api "repos/$GH_REPO/issues/$candidate")"
           jq -e '.state == "open" and ([.labels[].name] | index("approved") != null)' <<<"$issue" >/dev/null
           jq -r .body <<<"$issue" > "$RUNNER_TEMP/candidate-requirements.md"
           actual="$(sha256sum "$RUNNER_TEMP/candidate-requirements.md" | cut -d' ' -f1)"
           [ "$actual" = "$fingerprint" ]
           jq -n -S --argjson candidate "$candidate" --arg fingerprint "$fingerprint" \
-            --arg head "$published_head" --arg base "$current_base" \
+            --arg head "$published_head" --arg base "$implementation_base" \
             --arg baseBranch "$DEFAULT_BRANCH" --argjson pr "$PR_NUMBER" \
             --argjson publicationRunId "$PUBLICATION_RUN_ID" --argjson publicationRunAttempt "$PUBLICATION_RUN_ATTEMPT" \
-            --argjson staleRecoveryCount "$STALE_RECOVERY_COUNT" \
             '{candidate:$candidate,fingerprint:$fingerprint,head:$head,base:$base,
               baseBranch:$baseBranch,pr:$pr,publicationRunId:$publicationRunId,
-              publicationRunAttempt:$publicationRunAttempt,staleRecoveryCount:$staleRecoveryCount}' > "$RUNNER_TEMP/binding.json"
-          printf 'candidate=%s\nfingerprint=%s\nhead=%s\nbase=%s\nbase_branch=%s\npr=%s\npublication_run_id=%s\npublication_run_attempt=%s\nstale_recovery_count=%s\n' \
-            "$candidate" "$fingerprint" "$published_head" "$current_base" \
-            "$DEFAULT_BRANCH" "$PR_NUMBER" "$PUBLICATION_RUN_ID" "$PUBLICATION_RUN_ATTEMPT" \
-            "$STALE_RECOVERY_COUNT" >> "$GITHUB_OUTPUT"
+              publicationRunAttempt:$publicationRunAttempt}' > "$RUNNER_TEMP/binding.json"
+          printf 'candidate=%s\nfingerprint=%s\nhead=%s\nbase=%s\nbase_branch=%s\npr=%s\npublication_run_id=%s\npublication_run_attempt=%s\n' \
+            "$candidate" "$fingerprint" "$published_head" "$implementation_base" \
+            "$DEFAULT_BRANCH" "$PR_NUMBER" "$PUBLICATION_RUN_ID" "$PUBLICATION_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -570,7 +567,6 @@ jobs:
              {version:2,candidate:$b.candidate,requirementsFingerprint:$b.fingerprint,pullRequest:$b.pr,
               headSha:$b.head,baseBranch:$b.baseBranch,baseSha:$b.base,
               publicationRunId:$b.publicationRunId,publicationRunAttempt:$b.publicationRunAttempt,
-              staleRecoveryCount:$b.staleRecoveryCount,
               testedBaseSha:$t.testedBaseSha,testedHeadSha:$t.testedHeadSha,testedResultTree:$t.testedResultTree,
               ciWorkflowSourceSha:$t.ciWorkflowSourceSha,
               ciRunId:$t.ciRunId,testResult:$t.testResult,finalReview:$r.finalReview,
@@ -597,49 +593,3 @@ jobs:
             -F "client_payload[review_run_id]=$GITHUB_RUN_ID" \
             -F "client_payload[review_run_attempt]=$GITHUB_RUN_ATTEMPT" \
             -f "client_payload[review_workflow_source_sha]=$GITHUB_SHA"
-
-  hold-failed-stale-recovery:
-    needs: [authorize, validate-test, ai-review, merge-ready-contract]
-    if: ${{ always() && github.event.client_payload.stale_recovery_count == 1 && (needs.authorize.result != 'success' || needs.validate-test.result != 'success' || needs.ai-review.result != 'success' || needs.merge-ready-contract.result != 'success') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      actions: read
-      issues: write
-    steps:
-      - name: Put every failed bounded recovery ON_HOLD
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ env.REVIEW_PR_NUMBER }}
-          PUBLICATION_RUN_ID: ${{ env.REVIEW_PUBLICATION_RUN_ID }}
-          PUBLICATION_RUN_ATTEMPT: ${{ env.REVIEW_PUBLICATION_RUN_ATTEMPT }}
-        run: |
-          set -euo pipefail
-          case "$PR_NUMBER:$PUBLICATION_RUN_ID:$PUBLICATION_RUN_ATTEMPT" in
-            *[!0-9:]*|:*|*::*|*:) exit 1;;
-          esac
-
-          # Recover the candidate only from the exact immutable publication
-          # artifact. Dispatch payloads and mutable PR metadata do not choose
-          # which issue receives this privileged state transition.
-          artifacts="$(gh api --paginate "repos/$GH_REPO/actions/runs/$PUBLICATION_RUN_ID/artifacts?per_page=100" --slurp)"
-          artifact_name="candidate-publication-$PUBLICATION_RUN_ID-$PUBLICATION_RUN_ATTEMPT"
-          artifact_id="$(jq -r --arg name "$artifact_name" '
-            [.[].artifacts[] | select(.name == $name and .expired == false)] |
-            if length == 1 then .[0].id else empty end
-          ' <<<"$artifacts")"
-          test -n "$artifact_id"
-          gh api "repos/$GH_REPO/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/publication.zip"
-          test "$(unzip -Z1 "$RUNNER_TEMP/publication.zip" | grep -Fx 'publication-provenance.json' | wc -l)" -eq 1
-          unzip -p "$RUNNER_TEMP/publication.zip" publication-provenance.json > "$RUNNER_TEMP/publication.json"
-
-          jq -e --argjson pr "$PR_NUMBER" --argjson run "$PUBLICATION_RUN_ID" \
-            --argjson attempt "$PUBLICATION_RUN_ATTEMPT" '
-            .version == 1 and .pullRequest == $pr and .publicationRunId == $run and
-            .publicationRunAttempt == $attempt and (.candidate | type == "number" and . > 0)
-          ' "$RUNNER_TEMP/publication.json" >/dev/null
-          candidate="$(jq -r .candidate "$RUNNER_TEMP/publication.json")"
-          gh label create ON_HOLD --repo "$GH_REPO" --color B60205 \
-            --description 'Automated merge is paused pending investigation' --force
-          gh issue edit "$candidate" --repo "$GH_REPO" --add-label ON_HOLD
