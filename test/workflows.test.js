@@ -297,6 +297,37 @@ test('fresh Trusted Merge path retains atomic compare-and-swap publication', asy
   assert.match(trusted, /--force-with-lease="refs\/heads\/\$DEFAULT_BRANCH:\$expected_base"/);
 });
 
+test('Trusted Merge diagnoses each fail-closed gate and tolerates delayed merged projection', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+  const merge = trusted.slice(
+    trusted.indexOf('- name: Validate trusted state and merge exact head'),
+    trusted.indexOf('- name: Mark terminal candidate obsolete'),
+  );
+  const phases = [
+    'merge-ready-contract',
+    'contract-review-binding',
+    'publication-provenance',
+    'candidate-fingerprint-binding',
+    'pull-request-binding',
+    'ci-run-validation',
+    'protected-path-validation',
+    'current-base-snapshot',
+    'pull-request-mergeability',
+    'exact-object-fetch',
+    'prospective-tree-recalculation',
+    'merge-commit-construction',
+    'atomic-default-branch-push',
+    'post-push-pr-merged-confirmation',
+  ];
+
+  assert.match(merge, /set -Eeuo pipefail/);
+  assert.match(merge, /Trusted Merge failure::phase=%s line=%s command=%q exit=%s/);
+  for (const phase of phases) assert.match(merge, new RegExp(`phase=${phase}`));
+  assert.match(merge, /for merged_attempt in \$\(seq 1 10\); do/);
+  assert.match(merge, /\[ "\$pr_merged" = true \]/);
+  assert.doesNotMatch(merge, /npm (?:ci|install|test)|git rebase|gh pr update|self-improvement-review/);
+});
+
 test('Trusted Merge creates ON_HOLD before applying it', async () => {
   const trusted = await workflow('trusted-merge.yml');
   const hold = trusted.slice(trusted.indexOf('- name: Put a changed or unverifiable candidate ON_HOLD'));

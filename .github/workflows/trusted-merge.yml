@@ -77,7 +77,10 @@ jobs:
           REVIEW_RUN_ATTEMPT: ${{ github.event.client_payload.review_run_attempt }}
           REVIEW_WORKFLOW_SOURCE_SHA: ${{ github.event.client_payload.review_workflow_source_sha }}
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
+          phase=initialization
+          trap 'status=$?; printf "::error title=Trusted Merge failure::phase=%s line=%s command=%q exit=%s\n" "$phase" "$LINENO" "$BASH_COMMAND" "$status" >&2' ERR
+          phase=merge-ready-contract
           test -f "$CONTRACT"
           jq -e '.version == 2 and .finalReview == "PASS" and
             .finalReviewSha == .headSha and .testResult == "PASS" and
@@ -96,6 +99,7 @@ jobs:
             .reviewWorkflowSourceSha == $source
           ' "$CONTRACT" >/dev/null
 
+          phase=contract-review-binding
           candidate="$(jq -r .candidate "$CONTRACT")"
           pr_number="$(jq -r .pullRequest "$CONTRACT")"
           expected_head="$(jq -r .headSha "$CONTRACT")"
@@ -108,6 +112,7 @@ jobs:
           publication_run_attempt="$(jq -r .publicationRunAttempt "$CONTRACT")"
           # Independently re-read the immutable Approval Automation artifact;
           # mutable PR names, titles, branches, and bodies grant no authority.
+          phase=publication-provenance
           publication_run="$(gh api "repos/$GH_REPO/actions/runs/$publication_run_id")"
           jq -e --arg workflow ".github/workflows/approval-automation.yml" \
             '.event == "issues" and .conclusion == "success" and
@@ -148,11 +153,13 @@ jobs:
             '.implementationBaseSha == $base' \
             "$RUNNER_TEMP/publication.json" >/dev/null
 
+          phase=candidate-fingerprint-binding
           issue="$(gh api "repos/$GH_REPO/issues/$candidate")"
           jq -e '.state == "open" and ([.labels[].name] | index("approved") != null)' <<<"$issue" >/dev/null
           actual_fingerprint="$(jq -r .body <<<"$issue" | sha256sum | cut -d' ' -f1)"
           [ "$actual_fingerprint" = "$expected_fingerprint" ]
 
+          phase=pull-request-binding
           pr="$(gh api "repos/$GH_REPO/pulls/$pr_number")"
           jq -e --arg head "$expected_head" --arg branch "$DEFAULT_BRANCH" \
             '.state == "open" and .draft == false and .head.sha == $head and
@@ -160,12 +167,14 @@ jobs:
 
           # The tested base identifies the prospective tree; it is intentionally
           # distinct from the trusted commit that supplied the nested workflow.
+          phase=ci-run-validation
           ci_run="$(gh api "repos/$GH_REPO/actions/runs/$ci_run_id")"
           jq -e --arg source "$ci_workflow_source_sha" --arg branch "$DEFAULT_BRANCH" \
             '.name == "CI" and .event == "workflow_dispatch" and .conclusion == "success" and
              .path == ".github/workflows/ci.yml" and .head_branch == $branch and
              .head_sha == $source and .run_attempt == 1' <<<"$ci_run" >/dev/null
 
+          phase=protected-path-validation
           gh api "repos/$GH_REPO/pulls/$pr_number/files?per_page=100" --paginate \
             --jq '.[] | .filename, (.previous_filename // empty)' |
             if grep -Eq '^\.github/(workflows|actions)/'; then exit 1; fi
@@ -176,6 +185,7 @@ jobs:
           # than the PR API's historical base.sha, defines the current base.
           # This gives stale-base handling a coherent bounded snapshot even if
           # the branch advances while the PR is refreshed. Exhaustion fails closed.
+          phase=current-base-snapshot
           snapshot_ready=false
           for snapshot_attempt in 1 2 3; do
             base_before="$(gh api "repos/$GH_REPO/git/ref/heads/$DEFAULT_BRANCH" --jq .object.sha)"
@@ -198,6 +208,7 @@ jobs:
           echo 'obsolete=false' >> "$GITHUB_OUTPUT"
           # GitHub may temporarily report mergeable=null while recomputing after
           # a base update. Require mergeability only after ruling out stale evidence.
+          phase=pull-request-mergeability
           jq -e '.mergeable == true' <<<"$pr" >/dev/null
 
           # Build a commit with the exact tested result tree, then update the default
@@ -205,23 +216,41 @@ jobs:
           # head-only `sha` guard, force-with-lease rejects the push atomically if
           # expected_base is no longer the branch tip. No worktree is created and no
           # candidate code, hook, package, or test is executed in Trusted Merge.
+          phase=atomic-repository-initialization
           git init "$RUNNER_TEMP/atomic-merge"
           cd "$RUNNER_TEMP/atomic-merge"
           git config core.hooksPath /dev/null
           git remote add origin "https://github.com/$GH_REPO.git"
           gh auth setup-git
+          phase=exact-object-fetch
           git fetch --no-tags origin "$expected_base" "$expected_head"
+          phase=prospective-tree-recalculation
           actual_tree="$(git merge-tree --write-tree "$expected_base" "$expected_head")"
           [ "$actual_tree" = "$expected_tree" ]
+          phase=merge-commit-construction
           merge_commit="$(printf 'Self-Improvement candidate #%s (PR #%s)\n' "$candidate" "$pr_number" |
             git -c user.name='Self-Improvement Trusted Merge' \
                 -c user.email='self-improvement@users.noreply.github.com' \
                 commit-tree "$expected_tree" -p "$expected_base" -p "$expected_head")"
+          phase=atomic-default-branch-push
           git push origin "$merge_commit:refs/heads/$DEFAULT_BRANCH" \
             --force-with-lease="refs/heads/$DEFAULT_BRANCH:$expected_base"
 
-          # GitHub should recognize the head as merged after the atomic ref update.
-          gh api "repos/$GH_REPO/pulls/$pr_number" --jq .merged | grep -Fx true
+          # PR state is an eventually consistent projection of the Git ref update.
+          # Trusted Merge #4 updated the exact ref but its single immediate API
+          # read still returned false, turning a successful atomic merge into a
+          # fail-closed ON_HOLD result. Bound the wait and still fail closed if
+          # GitHub never recognizes the exact head as merged.
+          phase=post-push-pr-merged-confirmation
+          pr_merged=false
+          for merged_attempt in $(seq 1 10); do
+            if [ "$(gh api "repos/$GH_REPO/pulls/$pr_number" --jq .merged)" = true ]; then
+              pr_merged=true
+              break
+            fi
+            sleep 2
+          done
+          [ "$pr_merged" = true ]
 
       - name: Mark terminal candidate obsolete
         if: steps.merge.outputs.obsolete == 'true'
