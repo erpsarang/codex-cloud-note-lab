@@ -46,6 +46,7 @@ jobs:
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          allow-bot-users: self-improvement-trusted-merge[bot]
           sandbox: read-only
           output-file: improvement-candidate.md
           prompt: |
