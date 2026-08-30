@@ -24,7 +24,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-      issues: read
+      issues: write
       pull-requests: read
     outputs:
       candidate: ${{ steps.bind.outputs.candidate }}
@@ -91,6 +91,9 @@ jobs:
           [[ "$current_base" =~ ^[0-9a-f]{40}$ ]]
           if [ "$current_base" != "$implementation_base" ]; then
             echo "Candidate is obsolete: default branch moved from implementation base $implementation_base to $current_base" >&2
+            gh label create obsolete --repo "$GH_REPO" --color 6E7781 \
+              --description 'Candidate was superseded before review completed' --force
+            gh issue edit "$candidate" --repo "$GH_REPO" --add-label obsolete
             exit 1
           fi
           jq -e --arg head "$published_head" --arg branch "$DEFAULT_BRANCH" \

@@ -226,12 +226,20 @@ test('Trusted Merge obtains a coherent default-branch snapshot', async () => {
 test('Review rejects stale publications against the exact implementation base', async () => {
   const review = await workflow('review-fix.yml');
   const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
+  const provenanceBinding = authorize.indexOf("'.version == 2 and .pullRequest == $pr");
+  const staleCheck = authorize.indexOf('if [ "$current_base" != "$implementation_base" ]; then');
+  const obsoleteLabel = authorize.indexOf('gh issue edit "$candidate" --repo "$GH_REPO" --add-label obsolete');
 
+  assert.match(authorize, /issues: write/);
   assert.match(authorize, /implementation_base="\$\(jq -r \.implementationBaseSha/);
   assert.match(authorize, /if \[ "\$current_base" != "\$implementation_base" \]; then/);
   assert.match(authorize, /Candidate is obsolete/);
+  assert.match(authorize, /gh label create obsolete[^\n]*--repo "\$GH_REPO"/);
+  assert.ok(provenanceBinding >= 0 && staleCheck > provenanceBinding && obsoleteLabel > staleCheck);
+  assert.match(authorize.slice(staleCheck, obsoleteLabel), /Candidate is obsolete/);
+  assert.match(authorize.slice(obsoleteLabel), /exit 1/);
   assert.match(authorize, /--arg head "\$published_head" --arg base "\$implementation_base"/);
-  assert.doesNotMatch(authorize, /git (?:rebase|push)|gh pr update/);
+  assert.doesNotMatch(authorize, /review-retry|recovery|git (?:rebase|push)|gh pr update/);
 });
 
 test('fresh Trusted Merge path retains atomic compare-and-swap publication', async () => {
