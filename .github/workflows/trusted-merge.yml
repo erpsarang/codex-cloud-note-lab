@@ -170,7 +170,7 @@ jobs:
           phase=ci-run-validation
           ci_run="$(gh api "repos/$GH_REPO/actions/runs/$ci_run_id")"
           jq -e --arg source "$ci_workflow_source_sha" --arg branch "$DEFAULT_BRANCH" \
-            '.name == "CI" and .event == "workflow_dispatch" and .conclusion == "success" and
+            '.event == "workflow_dispatch" and .conclusion == "success" and
              .path == ".github/workflows/ci.yml" and .head_branch == $branch and
              .head_sha == $source and .run_attempt == 1' <<<"$ci_run" >/dev/null
 

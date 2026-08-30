@@ -328,6 +328,23 @@ test('Trusted Merge diagnoses each fail-closed gate and tolerates delayed merged
   assert.doesNotMatch(merge, /npm (?:ci|install|test)|git rebase|gh pr update|self-improvement-review/);
 });
 
+test('Trusted Merge authenticates prospective CI by stable execution metadata, not display name', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+  const validation = trusted.slice(
+    trusted.indexOf('phase=ci-run-validation'),
+    trusted.indexOf('phase=protected-path-validation'),
+  );
+
+  assert.match(validation, /actions\/runs\/\$ci_run_id/);
+  assert.match(validation, /\.event == "workflow_dispatch"/);
+  assert.match(validation, /\.conclusion == "success"/);
+  assert.match(validation, /\.path == "\.github\/workflows\/ci\.yml"/);
+  assert.match(validation, /\.head_branch == \$branch/);
+  assert.match(validation, /\.head_sha == \$source/);
+  assert.match(validation, /\.run_attempt == 1/);
+  assert.doesNotMatch(validation, /\.name\s*==|\.display_title\s*==|run-name/);
+});
+
 test('Trusted Merge creates ON_HOLD before applying it', async () => {
   const trusted = await workflow('trusted-merge.yml');
   const hold = trusted.slice(trusted.indexOf('- name: Put a changed or unverifiable candidate ON_HOLD'));
