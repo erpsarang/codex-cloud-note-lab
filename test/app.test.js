@@ -298,6 +298,7 @@ test("keeps additions and deletions working when storage access fails", async ()
   storageShouldFail = false;
   noteList.children[0].children[1].dispatch("click");
   assert.equal(noteList.children.length, 0);
+  assert.equal(emptyState.hidden, false);
   assert.equal(document.activeElement, input);
   assert.equal(storageStatus.textContent, "");
   assert.equal(storageStatus.hidden, false);
