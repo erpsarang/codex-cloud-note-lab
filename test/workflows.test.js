@@ -222,7 +222,7 @@ test('Trusted Merge terminally obsoletes authenticated version-1 publications du
   const versionOne = merge.indexOf('if [ "$publication_version" = 1 ]; then');
   const obsolete = merge.indexOf("printf 'obsolete=true\\ncandidate=%s\\n'", versionOne);
   const versionTwo = merge.indexOf('[ "$publication_version" = 2 ]', versionOne);
-  const mergeTokenAction = merge.indexOf('git push origin', versionTwo);
+  const mergeTokenAction = merge.indexOf('push origin', versionTwo);
 
   assert.ok(commonBinding >= 0 && runBinding > commonBinding && versionOne > runBinding);
   assert.match(merge, /\.candidate==\$candidate and \.pullRequest==\$pr/);
@@ -295,6 +295,34 @@ test('fresh Trusted Merge path retains atomic compare-and-swap publication', asy
   assert.match(trusted, /actual_tree=.*merge-tree --write-tree "\$expected_base" "\$expected_head"/);
   assert.match(trusted, /\[ "\$actual_tree" = "\$expected_tree" \]/);
   assert.match(trusted, /--force-with-lease="refs\/heads\/\$DEFAULT_BRANCH:\$expected_base"/);
+});
+
+test('final merge credential is explicitly scoped to Trusted Merge git operations', async () => {
+  const names = [
+    'approval-automation.yml',
+    'ci.yml',
+    'review-fix.yml',
+    'self-improvement.yml',
+    'trusted-merge.yml',
+  ];
+  const workflows = await Promise.all(names.map(workflow));
+  const trusted = workflows.at(-1);
+  const merge = trusted.slice(
+    trusted.indexOf('- name: Validate trusted state and merge exact head'),
+    trusted.indexOf('- name: Mark terminal candidate obsolete'),
+  );
+
+  for (const contents of workflows.slice(0, -1)) {
+    assert.doesNotMatch(contents, /SELF_IMPROVEMENT_MERGE_TOKEN/);
+  }
+  assert.equal(trusted.match(/SELF_IMPROVEMENT_MERGE_TOKEN/g)?.length, 1);
+  assert.match(merge, /GH_TOKEN: \$\{\{ secrets\.SELF_IMPROVEMENT_MERGE_TOKEN \}\}/);
+  assert.match(merge, /test -n "\$GH_TOKEN"/);
+  assert.match(merge, /merge_auth_header="\$\(printf 'x-access-token:%s' "\$GH_TOKEN" \| base64 \| tr -d '\\n'\)"/);
+  assert.doesNotMatch(merge, /gh auth setup-git|credential\.helper/);
+
+  const push = merge.slice(merge.indexOf('phase=atomic-default-branch-push'));
+  assert.match(push, /git -c "http\.https:\/\/github\.com\/\.extraheader=AUTHORIZATION: basic \$merge_auth_header" \\\s+push origin "\$merge_commit:refs\/heads\/\$DEFAULT_BRANCH" \\\s+--force-with-lease="refs\/heads\/\$DEFAULT_BRANCH:\$expected_base"/);
 });
 
 test('Trusted Merge diagnoses each fail-closed gate and tolerates delayed merged projection', async () => {
