@@ -14,10 +14,11 @@
         <textarea
           id="note-input"
           rows="4"
+          maxlength="1000"
           placeholder="메모를 입력하세요"
           aria-describedby="note-error"
         ></textarea>
-        <p id="note-error" role="alert" hidden>메모 내용을 입력하세요.</p>
+        <p id="note-error" role="alert" hidden></p>
         <button type="submit">메모 추가</button>
       </form>
       <p id="storage-status" role="status"></p>

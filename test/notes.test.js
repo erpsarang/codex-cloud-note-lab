@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { addNote, deleteNote } from "../notes.js";
+import { addNote, deleteNote, MAX_NOTE_LENGTH } from "../notes.js";
 
 test("adds a trimmed non-empty note", () => {
   const notes = [];
@@ -18,6 +18,21 @@ test("does not add empty or whitespace-only notes", () => {
   assert.equal(addNote(notes, ""), false);
   assert.equal(addNote(notes, "   \n\t"), false);
   assert.deepEqual(notes, []);
+});
+
+test("adds a note at the maximum length", () => {
+  const notes = [];
+  const note = "a".repeat(MAX_NOTE_LENGTH);
+
+  assert.equal(addNote(notes, note), true);
+  assert.deepEqual(notes, [note]);
+});
+
+test("does not add a note over the maximum length", () => {
+  const notes = ["Keep this note"];
+
+  assert.equal(addNote(notes, "a".repeat(MAX_NOTE_LENGTH + 1)), false);
+  assert.deepEqual(notes, ["Keep this note"]);
 });
 
 test("deletes only the selected note", () => {

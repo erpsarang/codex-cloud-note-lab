@@ -1,7 +1,9 @@
+export const MAX_NOTE_LENGTH = 1000;
+
 export function addNote(notes, text) {
   const note = text.trim();
 
-  if (!note) {
+  if (!note || note.length > MAX_NOTE_LENGTH) {
     return false;
   }
 
