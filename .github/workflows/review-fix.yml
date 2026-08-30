@@ -73,16 +73,30 @@ jobs:
           source_sha="$(jq -r .publicationSourceSha <<<"$provenance")"
           source_branch="$(jq -r .publicationSourceBranch <<<"$provenance")"
           expected_workflow="$GITHUB_REPOSITORY/.github/workflows/approval-automation.yml@refs/heads/$source_branch"
+          version="$(jq -r '.version // empty' <<<"$provenance")"
           jq -e --argjson pr "$PR_NUMBER" --argjson run "$PUBLICATION_RUN_ID" \
             --argjson attempt "$PUBLICATION_RUN_ATTEMPT" \
             --arg workflow "$expected_workflow" \
-            '.version == 2 and .pullRequest == $pr and .publicationRunId == $run and
+            '(.version == 1 or .version == 2) and
+             (.candidate | type == "number" and . > 0 and floor == .) and
+             (.requirementsFingerprint | test("^[0-9a-f]{64}$")) and
+             (.publicationSourceSha | test("^[0-9a-f]{40}$")) and
+             (.publicationSourceBranch | type == "string" and length > 0) and
+             .pullRequest == $pr and .publicationRunId == $run and
              .publicationRunAttempt == $attempt and .publicationWorkflow == $workflow and
-             (.implementationBaseSha | test("^[0-9a-f]{40}$")) and
              (.publishedHeadSha | test("^[0-9a-f]{40}$"))' <<<"$provenance" >/dev/null
           jq -e --arg sha "$source_sha" --arg ref "$source_branch" \
             '.head_sha == $sha and .head_branch == $ref' <<<"$publication_run" >/dev/null
           candidate="$(jq -r .candidate <<<"$provenance")"
+          if [ "$version" = 1 ]; then
+            echo "Candidate is obsolete: authenticated version 1 publication predates implementation-base provenance" >&2
+            gh label create obsolete --repo "$GH_REPO" --color 6E7781 \
+              --description 'Candidate was superseded before review completed' --force
+            gh issue edit "$candidate" --repo "$GH_REPO" --add-label obsolete
+            exit 1
+          fi
+          [ "$version" = 2 ]
+          jq -e '(.implementationBaseSha | test("^[0-9a-f]{40}$"))' <<<"$provenance" >/dev/null
           fingerprint="$(jq -r .requirementsFingerprint <<<"$provenance")"
           implementation_base="$(jq -r .implementationBaseSha <<<"$provenance")"
           published_head="$(jq -r .publishedHeadSha <<<"$provenance")"

@@ -226,9 +226,12 @@ test('Trusted Merge obtains a coherent default-branch snapshot', async () => {
 test('Review rejects stale publications against the exact implementation base', async () => {
   const review = await workflow('review-fix.yml');
   const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
-  const provenanceBinding = authorize.indexOf("'.version == 2 and .pullRequest == $pr");
+  const provenanceBinding = authorize.indexOf("'(.version == 1 or .version == 2) and");
   const staleCheck = authorize.indexOf('if [ "$current_base" != "$implementation_base" ]; then');
-  const obsoleteLabel = authorize.indexOf('gh issue edit "$candidate" --repo "$GH_REPO" --add-label obsolete');
+  const obsoleteLabel = authorize.indexOf(
+    'gh issue edit "$candidate" --repo "$GH_REPO" --add-label obsolete',
+    staleCheck,
+  );
 
   assert.match(authorize, /issues: write/);
   assert.match(authorize, /implementation_base="\$\(jq -r \.implementationBaseSha/);
@@ -240,6 +243,25 @@ test('Review rejects stale publications against the exact implementation base', 
   assert.match(authorize.slice(obsoleteLabel), /exit 1/);
   assert.match(authorize, /--arg head "\$published_head" --arg base "\$implementation_base"/);
   assert.doesNotMatch(authorize, /review-retry|recovery|git (?:rebase|push)|gh pr update/);
+});
+
+test('Review terminally obsoletes authenticated version-1 publications during rollout', async () => {
+  const review = await workflow('review-fix.yml');
+  const authorize = review.slice(review.indexOf('  authorize:'), review.indexOf('  validate-test:'));
+  const commonBinding = authorize.indexOf("'(.version == 1 or .version == 2) and");
+  const runBinding = authorize.indexOf("'.head_sha == $sha and .head_branch == $ref'");
+  const versionOne = authorize.indexOf('if [ "$version" = 1 ]; then');
+  const obsolete = authorize.indexOf('gh issue edit "$candidate" --repo "$GH_REPO" --add-label obsolete', versionOne);
+  const versionTwo = authorize.indexOf('[ "$version" = 2 ]', versionOne);
+
+  assert.ok(commonBinding >= 0 && runBinding > commonBinding && versionOne > runBinding);
+  assert.match(authorize, /\.pullRequest == \$pr and \.publicationRunId == \$run/);
+  assert.match(authorize, /\.publicationRunAttempt == \$attempt and \.publicationWorkflow == \$workflow/);
+  assert.match(authorize.slice(versionOne, versionTwo), /authenticated version 1 publication/);
+  assert.ok(obsolete > versionOne && versionTwo > obsolete);
+  assert.match(authorize.slice(obsolete, versionTwo), /exit 1/);
+  assert.match(authorize.slice(versionTwo), /implementationBaseSha/);
+  assert.doesNotMatch(authorize.slice(versionOne, versionTwo), /implementationBaseSha|review-retry|recovery|git (?:rebase|push)|gh pr update/);
 });
 
 test('fresh Trusted Merge path retains atomic compare-and-swap publication', async () => {
