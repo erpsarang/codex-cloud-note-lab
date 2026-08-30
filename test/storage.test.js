@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { loadNotes, NOTES_STORAGE_KEY, saveNotes } from "../storage.js";
+import {
+  loadNotes,
+  NOTES_STORAGE_KEY,
+  parseStoredNotes,
+  saveNotes,
+} from "../storage.js";
 
 class MemoryStorage {
   constructor(entries = {}) {
@@ -45,6 +50,15 @@ test("reports invalid JSON as a failed load", () => {
     loadNotes(new MemoryStorage({ [NOTES_STORAGE_KEY]: "invalid" })),
     { ok: false, notes: [] },
   );
+});
+
+test("parses storage event values, including a removed key", () => {
+  assert.deepEqual(parseStoredNotes('[" External note "]'), {
+    ok: true,
+    notes: ["External note"],
+  });
+  assert.deepEqual(parseStoredNotes(null), { ok: true, notes: [] });
+  assert.deepEqual(parseStoredNotes("invalid"), { ok: false, notes: [] });
 });
 
 test("reports a non-string-array value as a failed load", () => {

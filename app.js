@@ -1,9 +1,16 @@
 import { addNote, deleteNote } from "./notes.js";
-import { loadNotes, saveNotes } from "./storage.js";
+import {
+  loadNotes,
+  NOTES_STORAGE_KEY,
+  parseStoredNotes,
+  saveNotes,
+} from "./storage.js";
 
 const loadResult = loadNotes();
 const notes = loadResult.notes;
 let storageStateKnown = loadResult.ok;
+let hasUnsavedChanges = false;
+let synchronizationBlocked = false;
 const form = document.querySelector("#note-form");
 const input = document.querySelector("#note-input");
 const inputError = document.querySelector("#note-error");
@@ -16,6 +23,13 @@ if (!loadResult.ok) {
 }
 
 function persistNotes() {
+  if (synchronizationBlocked) {
+    hasUnsavedChanges = true;
+    storageStatus.textContent =
+      "다른 탭의 변경을 확인할 때까지 현재 변경 사항은 저장되지 않았습니다.";
+    return;
+  }
+
   if (!storageStateKnown) {
     const retryResult = loadNotes();
 
@@ -30,11 +44,37 @@ function persistNotes() {
   }
 
   if (saveNotes(notes)) {
+    hasUnsavedChanges = false;
     storageStatus.textContent = "";
   } else {
+    hasUnsavedChanges = true;
     storageStatus.textContent = "변경 사항이 이 브라우저에 저장되지 않았습니다.";
   }
 }
+
+globalThis.addEventListener?.("storage", (event) => {
+  if (event.key !== NOTES_STORAGE_KEY) {
+    return;
+  }
+
+  const externalResult = parseStoredNotes(event.newValue);
+
+  if (!externalResult.ok || hasUnsavedChanges) {
+    storageStateKnown = false;
+    synchronizationBlocked = true;
+    storageStatus.textContent = hasUnsavedChanges
+      ? "다른 탭의 변경과 충돌했습니다. 현재 변경 사항은 저장되지 않았습니다."
+      : "다른 탭에서 저장된 메모가 올바르지 않아 동기화하지 못했습니다.";
+    renderNotes();
+    return;
+  }
+
+  notes.splice(0, notes.length, ...externalResult.notes);
+  storageStateKnown = true;
+  synchronizationBlocked = false;
+  storageStatus.textContent = "";
+  renderNotes();
+});
 
 function renderNotes() {
   noteList.replaceChildren();
