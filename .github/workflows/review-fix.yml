@@ -160,6 +160,8 @@ jobs:
         env:
           BASE_SHA: ${{ needs.authorize.outputs.base }}
           HEAD_SHA: ${{ needs.authorize.outputs.head }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
           ensure_commit() {
@@ -170,7 +172,9 @@ jobs:
             fi
 
             echo "$label commit is missing locally; fetching exact SHA $sha from trusted origin" >&2
-            if ! git fetch --no-tags --no-recurse-submodules origin "$sha"; then
+            auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            if ! git -c "http.${GITHUB_SERVER_URL}/.extraheader=AUTHORIZATION: basic $auth_header" \
+              fetch --no-tags --no-recurse-submodules origin "$sha"; then
               echo "required Git object missing: unable to fetch $label commit $sha" >&2
               exit 1
             fi

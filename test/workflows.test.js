@@ -112,7 +112,11 @@ test('Review obtains exact merge objects and diagnoses every fail-closed merge-t
   const validation = review.slice(review.indexOf('  validate-test:'), review.indexOf('  ai-review:'));
 
   assert.match(validation, /git cat-file -e "\$sha\^\{commit\}"/);
-  assert.match(validation, /git fetch --no-tags --no-recurse-submodules origin "\$sha"/);
+  assert.match(validation, /GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(validation, /GITHUB_SERVER_URL: \$\{\{ github\.server_url \}\}/);
+  assert.match(validation, /printf 'x-access-token:%s' "\$GITHUB_TOKEN" \| base64 \| tr -d '\\n'/);
+  assert.match(validation, /git -c "http\.\$\{GITHUB_SERVER_URL\}\/\.extraheader=AUTHORIZATION: basic \$auth_header"[\s\S]*?fetch --no-tags --no-recurse-submodules origin "\$sha"/);
+  assert.doesNotMatch(validation, /git config|credential\.helper/);
   assert.match(validation, /required Git object missing: unable to fetch \$label commit \$sha/);
   assert.match(validation, /git merge-tree --write-tree --messages "\$BASE_SHA" "\$HEAD_SHA"/);
   assert.match(validation, /actual merge conflict between exact base/);
@@ -162,7 +166,17 @@ test('long-lived candidate prospective tree uses fetched live base and remains e
     const result = spawnSync('bash', ['-c', step], {
       cwd: runner,
       encoding: 'utf8',
-      env: { ...process.env, BASE_SHA: base, HEAD_SHA: head, RUNNER_TEMP: fixture, GITHUB_OUTPUT: output },
+      env: {
+        ...process.env,
+        BASE_SHA: base,
+        HEAD_SHA: head,
+        RUNNER_TEMP: fixture,
+        GITHUB_OUTPUT: output,
+        // The command-scoped header is harmless for this public file remote; a
+        // private HTTPS origin receives the same read-only workflow token.
+        GITHUB_TOKEN: 'public-private-regression-token',
+        GITHUB_SERVER_URL: 'https://github.com',
+      },
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stderr, /BASE_SHA commit is missing locally; fetching exact SHA/);
