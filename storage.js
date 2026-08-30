@@ -1,3 +1,5 @@
+import { MAX_NOTE_LENGTH } from "./notes.js";
+
 export const NOTES_STORAGE_KEY = "notes";
 
 export function loadNotes(storage) {
@@ -19,7 +21,10 @@ export function loadNotes(storage) {
 
     return Array.isArray(notes) &&
       notes.every(
-        (note) => typeof note === "string" && note.trim().length > 0,
+        (note) =>
+          typeof note === "string" &&
+          note.trim().length > 0 &&
+          note.trim().length <= MAX_NOTE_LENGTH,
       )
       ? { ok: true, notes: notes.map((note) => note.trim()) }
       : { ok: false, notes: [] };

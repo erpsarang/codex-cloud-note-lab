@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { loadNotes, NOTES_STORAGE_KEY, saveNotes } from "../storage.js";
+import { MAX_NOTE_LENGTH } from "../notes.js";
 
 class MemoryStorage {
   constructor(entries = {}) {
@@ -63,6 +64,14 @@ test("reports a non-string-array value as a failed load", () => {
 test("reports a whitespace-only stored note as a failed load", () => {
   const storage = new MemoryStorage({
     [NOTES_STORAGE_KEY]: JSON.stringify(["Valid", "   "]),
+  });
+
+  assert.deepEqual(loadNotes(storage), { ok: false, notes: [] });
+});
+
+test("reports an overlong stored note as a failed load", () => {
+  const storage = new MemoryStorage({
+    [NOTES_STORAGE_KEY]: JSON.stringify(["a".repeat(MAX_NOTE_LENGTH + 1)]),
   });
 
   assert.deepEqual(loadNotes(storage), { ok: false, notes: [] });

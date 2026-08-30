@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { MAX_NOTE_LENGTH } from "../notes.js";
 
 class FakeElement {
   constructor(tagName) {
@@ -53,6 +54,7 @@ test("includes Korean submit and empty-state labels", async () => {
     html,
     /<p id="empty-state" hidden>저장된 메모가 없습니다\.<\/p>/,
   );
+  assert.match(html, new RegExp(`maxlength="${MAX_NOTE_LENGTH}"`));
 });
 
 class MemoryStorage {
@@ -359,6 +361,62 @@ test("shows validation feedback for empty and whitespace-only notes", async () =
   form.dispatch("submit");
   assert.equal(inputError.hidden, true);
   assert.equal(noteList.children[0].children[0].textContent, "Valid note");
+
+  delete globalThis.document;
+  delete globalThis.localStorage;
+});
+
+test("saves a maximum-length note and rejects an overlong note", async () => {
+  const form = new FakeElement("form");
+  const input = new FakeElement("textarea");
+  const inputError = new FakeElement("p");
+  const storageStatus = new FakeElement("p");
+  const emptyState = new FakeElement("p");
+  const noteList = new FakeElement("ul");
+  inputError.hidden = true;
+  globalThis.localStorage = new MemoryStorage(["Stored note"]);
+  globalThis.document = {
+    activeElement: null,
+    querySelector(selector) {
+      return {
+        "#note-form": form,
+        "#note-input": input,
+        "#note-error": inputError,
+        "#storage-status": storageStatus,
+        "#empty-state": emptyState,
+        "#note-list": noteList,
+      }[selector];
+    },
+    createElement(tagName) {
+      return new FakeElement(tagName);
+    },
+  };
+
+  await import(`../app.js?long-note=${Date.now()}`);
+  const maximumLengthNote = "a".repeat(MAX_NOTE_LENGTH);
+  input.value = maximumLengthNote;
+  form.dispatch("submit");
+
+  assert.equal(noteList.children.length, 2);
+  assert.deepEqual(JSON.parse(localStorage.getItem("notes")), [
+    "Stored note",
+    maximumLengthNote,
+  ]);
+
+  const storedBeforeSubmit = localStorage.getItem("notes");
+  input.value = `${maximumLengthNote}a`;
+  input.dispatch("input");
+
+  assert.equal(inputError.textContent, `메모는 ${MAX_NOTE_LENGTH}자 이하로 입력하세요.`);
+  assert.equal(inputError.hidden, false);
+  assert.equal(input.getAttribute("aria-invalid"), "true");
+
+  form.dispatch("submit");
+
+  assert.equal(noteList.children.length, 2);
+  assert.equal(localStorage.getItem("notes"), storedBeforeSubmit);
+  assert.equal(input.value.length, MAX_NOTE_LENGTH + 1);
+  assert.equal(document.activeElement, input);
 
   delete globalThis.document;
   delete globalThis.localStorage;

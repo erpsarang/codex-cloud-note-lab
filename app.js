@@ -1,4 +1,4 @@
-import { addNote, deleteNote } from "./notes.js";
+import { addNote, deleteNote, MAX_NOTE_LENGTH } from "./notes.js";
 import { loadNotes, saveNotes } from "./storage.js";
 
 const loadResult = loadNotes();
@@ -9,6 +9,15 @@ const inputError = document.querySelector("#note-error");
 const storageStatus = document.querySelector("#storage-status");
 const emptyState = document.querySelector("#empty-state");
 const noteList = document.querySelector("#note-list");
+
+const EMPTY_NOTE_ERROR = "메모 내용을 입력하세요.";
+const LONG_NOTE_ERROR = `메모는 ${MAX_NOTE_LENGTH}자 이하로 입력하세요.`;
+
+function showInputError(message) {
+  inputError.textContent = message;
+  inputError.hidden = false;
+  input.setAttribute("aria-invalid", "true");
+}
 
 if (!loadResult.ok) {
   storageStatus.textContent = "저장된 메모를 불러오지 못했습니다.";
@@ -52,7 +61,11 @@ function renderNotes() {
 }
 
 input.addEventListener("input", () => {
-  if (input.value.trim()) {
+  const note = input.value.trim();
+
+  if (note.length > MAX_NOTE_LENGTH) {
+    showInputError(LONG_NOTE_ERROR);
+  } else if (note) {
     inputError.hidden = true;
     input.removeAttribute("aria-invalid");
   }
@@ -62,8 +75,11 @@ form.addEventListener("submit", (event) => {
   event.preventDefault();
 
   if (!addNote(notes, input.value)) {
-    inputError.hidden = false;
-    input.setAttribute("aria-invalid", "true");
+    showInputError(
+      input.value.trim().length > MAX_NOTE_LENGTH
+        ? LONG_NOTE_ERROR
+        : EMPTY_NOTE_ERROR,
+    );
     input.focus();
     return;
   }
