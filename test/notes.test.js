@@ -36,3 +36,12 @@ test("does not change notes when the selected index does not exist", () => {
   assert.equal(deleteNote(notes, 1), false);
   assert.deepEqual(notes, ["Keep this note"]);
 });
+
+test("does not change notes when the selected index is not an integer", () => {
+  const notes = ["Keep this note"];
+
+  assert.equal(deleteNote(notes, 0.5), false);
+  assert.equal(deleteNote(notes, NaN), false);
+  assert.equal(deleteNote(notes, "0"), false);
+  assert.deepEqual(notes, ["Keep this note"]);
+});
