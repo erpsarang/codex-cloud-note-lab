@@ -312,6 +312,10 @@ jobs:
           root = "candidate-source"
           base, head = os.environ["BASE_SHA"], os.environ["HEAD_SHA"]
           prompt_cap = 60 * 1024
+          # A text file may use the available prompt budget; do not reject it at
+          # an unrelated, smaller per-file threshold. The prompt-cap accounting
+          # below still fails closed if the complete patch cannot be embedded.
+          file_diff_cap = prompt_cap
           requirements_cap = 32 * 1024
 
           def git(*args):
@@ -409,7 +413,7 @@ jobs:
                           f"base_bytes={size(base, path)}; head_bytes={size(head, path)}; "
                           f"binary={'yes' if binary else 'no'} ---\n")
               patch, file_truncated = (b"", False) if binary else git_limited(
-                  16 * 1024, "--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+                  file_diff_cap, "--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
                   "--unified=80", base, head, "--", path,
               )
               patch_text, patch_invalid_utf8 = strict_text(
@@ -417,7 +421,7 @@ jobs:
               )
               candidate = metadata + patch_text
               if file_truncated:
-                  candidate += (f"\n[TRUNCATED: diff content for {path!r} exceeded 16384 bytes; "
+                  candidate += (f"\n[TRUNCATED: diff content for {path!r} exceeded {file_diff_cap} bytes; "
                                 "remaining byte range omitted.]\n")
               review_input_incomplete |= binary or file_truncated or patch_invalid_utf8
               reserve = 1024 + sum(len(name.encode("utf-8", "replace")) + 8 for name in omitted)

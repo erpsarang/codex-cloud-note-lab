@@ -477,6 +477,7 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /path: candidate-source/);
   assert.doesNotMatch(ai, /diff --binary|candidate\.diff/);
   assert.match(ai, /prompt_cap = 60 \* 1024/);
+  assert.match(ai, /file_diff_cap = prompt_cap/);
   assert.match(ai, /requirements_cap = 32 \* 1024/);
   assert.match(ai, /def git_limited\(limit, \*args\)/);
   assert.match(ai, /source\.read\(requirements_cap \+ 1\)/);
@@ -486,8 +487,8 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.doesNotMatch(ai, /decode\("utf-8", "replace"\)/);
   assert.match(ai, /review_input_incomplete = requirements_oversized or requirements_invalid_utf8/);
   assert.match(ai, /binary or file_truncated or patch_invalid_utf8/);
-  assert.match(ai, /16 \* 1024, "--literal-pathspecs", "diff"/);
-  assert.match(ai, /diff content for \{path!r\} exceeded 16384 bytes/);
+  assert.match(ai, /file_diff_cap, "--literal-pathspecs", "diff"/);
+  assert.match(ai, /diff content for \{path!r\} exceeded \{file_diff_cap\} bytes/);
   assert.match(ai, /--no-ext-diff.*--no-textconv.*--no-renames/s);
   assert.match(ai, /name_fields\[-1\] != b""/);
   assert.match(ai, /len\(name_fields\) % 2/);
@@ -666,7 +667,7 @@ test('oversized approved requirements deterministically bypass AI and fail close
   }
 });
 
-test('every omitted diff body and cap-fitted requirement fails closed', async () => {
+test('PR #95-sized UTF-8 diff fits while unsafe or actually omitted data fails closed', async () => {
   const review = await workflow('review-fix.yml');
   const python = review.match(/          python3 - <<'PY'\n([\s\S]*?)\n          PY/)[1]
     .split('\n').map((line) => line.slice(10)).join('\n');
@@ -705,14 +706,24 @@ test('every omitted diff body and cap-fitted requirement fails closed', async ()
     assert.equal(result.status, 0, result.stderr);
     assert.equal(await readFile(join(fixture, 'review-input-incomplete'), 'utf8'), 'true\n');
 
-    await writeFile(join(candidate, 'large.txt'), `${'large line\n'.repeat(3000)}`);
+    // PR #95 (edd6401..1522b57) was rejected because its new 444-line UTF-8
+    // workflow fixture patch exceeded the former 16 KiB per-file cap even
+    // though the complete review prompt still fit under 60 KiB.
+    const pr95SizedText = Array.from({ length: 444 }, (_, index) =>
+      `test fixture line ${String(index + 1).padStart(3, '0')}: ${'reviewable text '.repeat(3)}\n`).join('');
+    assert.ok(Buffer.byteLength(pr95SizedText) > 16 * 1024);
+    await writeFile(join(candidate, 'test-workflows-fixtures.test.js'), pr95SizedText);
     run('add', '-A');
     run('commit', '-qm', 'large file');
     const largeHead = run('rev-parse', 'HEAD');
     result = construct(binaryHead, largeHead);
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(await readFile(join(fixture, 'review-input-incomplete'), 'utf8'), 'true\n');
-    assert.match(await readFile(join(fixture, 'review-prompt.txt'), 'utf8'), /diff content .* exceeded 16384 bytes/);
+    assert.equal(await readFile(join(fixture, 'review-input-incomplete'), 'utf8'), 'false\n');
+    const largePrompt = await readFile(join(fixture, 'review-prompt.txt'), 'utf8');
+    assert.match(largePrompt, /\+test fixture line 001:/);
+    assert.match(largePrompt, /\+test fixture line 444:/);
+    assert.doesNotMatch(largePrompt, /\[TRUNCATED:/);
+    assert.ok(Buffer.byteLength(largePrompt) <= 60 * 1024);
 
     for (let index = 0; index < 5; index += 1) {
       await writeFile(join(candidate, `capped-${index}.txt`), `${String(index).repeat(14000)}\n`);
