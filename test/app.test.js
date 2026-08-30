@@ -301,6 +301,7 @@ test("keeps additions and deletions working when storage access fails", async ()
   assert.equal(document.activeElement, input);
   assert.equal(storageStatus.textContent, "");
   assert.equal(storageStatus.hidden, false);
+  assert.equal(emptyState.hidden, false);
 
   delete globalThis.document;
   delete globalThis.localStorage;
