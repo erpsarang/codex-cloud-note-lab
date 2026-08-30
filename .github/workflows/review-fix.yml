@@ -160,10 +160,55 @@ jobs:
         env:
           BASE_SHA: ${{ needs.authorize.outputs.base }}
           HEAD_SHA: ${{ needs.authorize.outputs.head }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
+          ensure_commit() {
+            local label="$1" sha="$2"
+            if git cat-file -e "$sha^{commit}" 2>/dev/null; then
+              echo "$label commit is available: $sha"
+              return
+            fi
+
+            echo "$label commit is missing locally; fetching exact SHA $sha from trusted origin" >&2
+            auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            if ! git -c "http.${GITHUB_SERVER_URL}/.extraheader=AUTHORIZATION: basic $auth_header" \
+              fetch --no-tags --no-recurse-submodules origin "$sha"; then
+              echo "required Git object missing: unable to fetch $label commit $sha" >&2
+              exit 1
+            fi
+            if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
+              echo "required Git object missing: $label SHA $sha is not a commit after exact fetch" >&2
+              exit 1
+            fi
+            echo "$label commit is available after exact-SHA fetch: $sha"
+          }
+
+          ensure_commit BASE_SHA "$BASE_SHA"
+          ensure_commit HEAD_SHA "$HEAD_SHA"
           test -z "$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -E '^\.github/(workflows|actions)/' || true)"
-          echo "tree=$(git merge-tree --write-tree "$BASE_SHA" "$HEAD_SHA")" >> "$GITHUB_OUTPUT"
+          merge_stdout="$RUNNER_TEMP/merge-tree.stdout"
+          merge_stderr="$RUNNER_TEMP/merge-tree.stderr"
+          set +e
+          git merge-tree --write-tree --messages "$BASE_SHA" "$HEAD_SHA" >"$merge_stdout" 2>"$merge_stderr"
+          merge_status=$?
+          set -e
+          result_tree="$(head -n 1 "$merge_stdout")"
+          if [ "$merge_status" -eq 0 ] && [[ "$result_tree" =~ ^[0-9a-f]{40,64}$ ]]; then
+            echo "prospective merge tree calculated: $result_tree"
+            echo "tree=$result_tree" >> "$GITHUB_OUTPUT"
+          elif [ "$merge_status" -eq 1 ] && [[ "$result_tree" =~ ^[0-9a-f]{40,64}$ ]]; then
+            echo "actual merge conflict between exact base $BASE_SHA and exact head $HEAD_SHA" >&2
+            cat "$merge_stdout" >&2
+            cat "$merge_stderr" >&2
+            exit 1
+          else
+            echo "git merge-tree invocation failure (exit $merge_status) for base $BASE_SHA and head $HEAD_SHA" >&2
+            cat "$merge_stdout" >&2
+            cat "$merge_stderr" >&2
+            exit 1
+          fi
       - name: Dispatch and validate prospective-merge CI
         env:
           GH_TOKEN: ${{ github.token }}
