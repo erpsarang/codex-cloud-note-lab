@@ -533,7 +533,7 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /review_input_incomplete \|= binary or file_truncated/);
   assert.match(ai, /\[TRUNCATED: text diff exceeded the deterministic 61440-byte prompt cap/);
   assert.match(ai, /Omitted \{len\(omitted\)\} file\(s\)/);
-  assert.match(ai, /If truncation\n\s+prevents a meaningful review, fail closed/);
+  assert.match(ai, /If truncation prevents a meaningful review, fail closed/);
   assert.match(ai, /rm -rf candidate-source/);
   assert.match(ai, /test ! -e candidate-source/);
   assert.match(ai, /open\("trusted-review-input\/candidate-requirements\.md", "rb"\)/);
@@ -548,7 +548,8 @@ test('trusted runner caps and embeds review data, then removes it before AI revi
   assert.match(ai, /boundary = "REVIEW_DATA_" \+ secrets\.token_hex\(32\)/);
   assert.match(ai, /boundary not in diff_payload and boundary not in requirements_payload/);
   assert.match(ai, /if: env\.REVIEW_INPUT_INCOMPLETE != 'true'\n\s+uses: openai\/codex-action@v1/);
-  assert.match(ai, /if: env\.REVIEW_INPUT_INCOMPLETE == 'true'\n\s+run: \|\n\s+printf '%s\\n' 'VERDICT: NON_PASS'/);
+  assert.doesNotMatch(ai, /if: env\.REVIEW_INPUT_INCOMPLETE == 'true'/);
+  assert.match(ai, /test -f "\$RUNNER_TEMP\/final-review\.json"/);
   const action = ai.slice(ai.indexOf('uses: openai/codex-action@v1'));
   assert.doesNotMatch(action, /candidate\.diff|candidate-requirements\.md|working-directory:/);
 });
@@ -673,9 +674,8 @@ test('oversized approved requirements deterministically bypass AI and fail close
   assert.match(ai, /REVIEW_INPUT_INCOMPLETE=%s/);
   assert.match(ai, /"true\\n" if review_input_incomplete else "false\\n"/);
   assert.match(ai, /AI review only \(fail on every non-PASS verdict\)\n\s+if: env\.REVIEW_INPUT_INCOMPLETE != 'true'/);
-  assert.match(ai, /Fail closed when any review input is omitted\n\s+if: env\.REVIEW_INPUT_INCOMPLETE == 'true'/);
-  assert.match(ai, /'VERDICT: NON_PASS' > "\$RUNNER_TEMP\/final-review\.md"/);
-  assert.match(ai, /last_nonempty != "VERDICT: PASS"/);
+  assert.doesNotMatch(ai, /if: env\.REVIEW_INPUT_INCOMPLETE == 'true'/);
+  assert.match(ai, /test -f "\$RUNNER_TEMP\/final-review\.json"/);
 
   try {
     await mkdir(candidate);
@@ -945,16 +945,58 @@ test('AI stage is review-only and exposes no automated fix contract', async () =
   const trusted = await workflow('trusted-merge.yml');
 
   assert.match(review, /This is review-only:\n\s+do not propose or apply an automated fix/);
-  assert.match(review, /VERDICT: PASS\n\s+VERDICT: NON_PASS/);
+  assert.match(review, /Return only the result required by the output schema/);
   assert.doesNotMatch(review, /reviewFixAttempts/);
   assert.doesNotMatch(trusted, /\.reviewFixAttempts/);
 });
 
-test('AI review accepts only one verdict with PASS as the final nonempty line', async () => {
+test('AI review uses an exact structured schema and deterministic PASS validation', async () => {
   const review = await workflow('review-fix.yml');
+  const ai = review.slice(review.indexOf('  ai-review:'), review.indexOf('  merge-ready-contract:'));
 
-  assert.match(review, /\^\[\[:space:\]\]\*VERDICT:/);
-  assert.match(review, /verdict_count != 1/);
-  assert.match(review, /last_nonempty != "VERDICT: PASS"/);
-  assert.doesNotMatch(review, /grep -Fx 'VERDICT: PASS'/);
+  assert.match(ai, /output-file: \$\{\{ runner\.temp \}\}\/final-review\.json/);
+  assert.match(ai, /output-schema: \|/);
+  assert.match(ai, /"additionalProperties": false/);
+  assert.match(ai, /"enum": \["PASS", "NON_PASS"\]/);
+  assert.match(ai, /"required": \["verdict", "findings"\]/);
+  assert.match(ai, /\(keys == \["findings", "verdict"\]\)/);
+  assert.match(ai, /all\(\.findings\[\]; type == "string"\)/);
+  assert.match(ai, /\.verdict == "PASS"/);
+  assert.doesNotMatch(ai, /awk|VERDICT:|last_nonempty|verdict_count/);
+});
+
+test('AI review validator fails closed except for exact PASS JSON', async () => {
+  const review = await workflow('review-fix.yml');
+  const validation = review.match(/      - name: Validate and record review result[\s\S]*?        run: \|\n([\s\S]*?)\n      - uses: actions\/upload-artifact@v4/)[1]
+    .split('\n').map((line) => line.slice(10)).join('\n');
+  const cases = [
+    [undefined, 1],
+    ['not json\n', 1],
+    ['{"verdict":"NON_PASS","findings":["failure"]}\n', 1],
+    ['{"verdict":"UNKNOWN","findings":[]}\n', 1],
+    ['{"findings":[]}\n', 1],
+    ['{"verdict":"PASS","findings":[],"extra":true}\n', 1],
+    ['{"verdict":"PASS","findings":[{"summary":"wrong type"}]}\n', 1],
+    ['{"verdict":"PASS","findings":[]}\n', 0],
+  ];
+
+  for (const [contents, expectedStatus] of cases) {
+    const fixture = await mkdtemp(join(tmpdir(), 'structured-review-'));
+    try {
+      if (contents !== undefined) {
+        await writeFile(join(fixture, 'final-review.json'), contents);
+      }
+      const result = spawnSync('bash', ['-c', validation], {
+        encoding: 'utf8',
+        env: { ...process.env, RUNNER_TEMP: fixture, HEAD_SHA: 'a'.repeat(40) },
+      });
+      assert.equal(result.status === 0, expectedStatus === 0, result.stderr);
+      assert.equal(
+        await readFile(join(fixture, 'review-result.json'), 'utf8').then(() => true, () => false),
+        expectedStatus === 0,
+      );
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
+  }
 });

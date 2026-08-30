@@ -399,11 +399,9 @@ jobs:
           tests, hooks, or scripts, or execute candidate code. This is review-only:
           do not propose or apply an automated fix.
 
-          Explain any requirement or correctness failures concisely. If truncation
-          prevents a meaningful review, fail closed. Your final nonempty line must be
-          exactly one of the following, and no other line may begin with `VERDICT:`:
-          VERDICT: PASS
-          VERDICT: NON_PASS
+          Explain any requirement or correctness failures concisely in the structured
+          findings. If truncation prevents a meaningful review, fail closed with a
+          NON_PASS verdict. Return only the result required by the output schema.
 
           """
 
@@ -493,25 +491,39 @@ jobs:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           allow-bot-users: github-actions[bot]
           permission-profile: ":read-only"
-          output-file: ${{ runner.temp }}/final-review.md
+          output-file: ${{ runner.temp }}/final-review.json
+          output-schema: |
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "verdict": {
+                  "type": "string",
+                  "enum": ["PASS", "NON_PASS"]
+                },
+                "findings": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "required": ["verdict", "findings"]
+            }
           prompt: ${{ env.REVIEW_PROMPT }}
-      - name: Fail closed when any review input is omitted
-        if: env.REVIEW_INPUT_INCOMPLETE == 'true'
-        run: |
-          printf '%s\n' 'VERDICT: NON_PASS' > "$RUNNER_TEMP/final-review.md"
       - name: Validate and record review result
         env:
           HEAD_SHA: ${{ needs.authorize.outputs.head }}
         run: |
-          awk '
-            /^[[:space:]]*VERDICT:/ { verdict_count++ }
-            NF { last_nonempty = $0 }
-            END {
-              if (verdict_count != 1 || last_nonempty != "VERDICT: PASS") {
-                exit 1
-              }
-            }
-          ' "$RUNNER_TEMP/final-review.md"
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/final-review.json"
+          jq -e '
+            type == "object" and
+            (keys == ["findings", "verdict"]) and
+            (.verdict | type == "string") and
+            (.verdict == "PASS" or .verdict == "NON_PASS") and
+            (.findings | type == "array") and
+            all(.findings[]; type == "string") and
+            .verdict == "PASS"
+          ' "$RUNNER_TEMP/final-review.json" >/dev/null
           jq -n -S --arg head "$HEAD_SHA" '{finalReview:"PASS",finalReviewSha:$head}' > "$RUNNER_TEMP/review-result.json"
       - uses: actions/upload-artifact@v4
         with:
