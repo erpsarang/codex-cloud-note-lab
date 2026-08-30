@@ -49,6 +49,21 @@ test('Review remains read-only and has no merge authority', async () => {
   assert.doesNotMatch(review, /SELF_IMPROVEMENT_MERGE_TOKEN|pulls\/[^\n]+\/merge|gh pr merge|git push/);
 });
 
+test('Self-Improvement permits only the dedicated Trusted Merge bot', async () => {
+  const candidate = await workflow('self-improvement.yml');
+  const codex = candidate.slice(
+    candidate.indexOf('uses: openai/codex-action@v1'),
+    candidate.indexOf('- name: Create improvement candidate issue'),
+  );
+
+  assert.match(candidate, /permissions:\n  contents: read\n  issues: write/);
+  assert.match(codex, /allow-bot-users: self-improvement-trusted-merge\[bot\]/);
+  assert.match(codex, /sandbox: read-only/);
+  assert.doesNotMatch(candidate, /allow-bots:\s*true/);
+  assert.doesNotMatch(candidate, /allow-bot-users: github-actions\[bot\]/);
+  assert.doesNotMatch(candidate, /SELF_IMPROVEMENT_MERGE_(?:TOKEN|APP_ID|APP_PRIVATE_KEY)/);
+});
+
 test('manual CI constructs and records the prospective merge tree', async () => {
   const ci = await workflow('ci.yml');
 
