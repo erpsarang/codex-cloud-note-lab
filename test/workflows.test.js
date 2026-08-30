@@ -100,11 +100,83 @@ test('manual CI constructs and records the prospective merge tree', async () => 
 test('Review binds MERGE_READY to the successful merge CI run', async () => {
   const review = await workflow('review-fix.yml');
 
-  assert.match(review, /git merge-tree --write-tree "\$BASE_SHA" "\$HEAD_SHA"/);
+  assert.match(review, /git merge-tree --write-tree --messages "\$BASE_SHA" "\$HEAD_SHA"/);
   assert.match(review, /-f tested_base_sha="\$BASE_SHA" -f tested_head_sha="\$HEAD_SHA"/);
   assert.match(review, /ciWorkflowSourceSha:\$source,ciRunId:\$run/);
   assert.match(review, /testedBaseSha:\$t\.testedBaseSha,testedHeadSha:\$t\.testedHeadSha,testedResultTree:\$t\.testedResultTree/);
   assert.match(review, /ciWorkflowSourceSha:\$t\.ciWorkflowSourceSha/);
+});
+
+test('Review obtains exact merge objects and diagnoses every fail-closed merge-tree outcome', async () => {
+  const review = await workflow('review-fix.yml');
+  const validation = review.slice(review.indexOf('  validate-test:'), review.indexOf('  ai-review:'));
+
+  assert.match(validation, /git cat-file -e "\$sha\^\{commit\}"/);
+  assert.match(validation, /git fetch --no-tags --no-recurse-submodules origin "\$sha"/);
+  assert.match(validation, /required Git object missing: unable to fetch \$label commit \$sha/);
+  assert.match(validation, /git merge-tree --write-tree --messages "\$BASE_SHA" "\$HEAD_SHA"/);
+  assert.match(validation, /actual merge conflict between exact base/);
+  assert.match(validation, /git merge-tree invocation failure \(exit \$merge_status\)/);
+  assert.match(validation, /\[ "\$merge_status" -eq 0 \].*result_tree.*\{40,64\}/s);
+  assert.doesNotMatch(validation, /\.base\.sha|git (?:rebase|push)|gh pr update/);
+});
+
+test('long-lived candidate prospective tree uses fetched live base and remains evidence-bound', async () => {
+  const fixture = await mkdtemp(join(tmpdir(), 'prospective-long-lived-'));
+  const source = join(fixture, 'source');
+  const remote = join(fixture, 'remote.git');
+  const runner = join(fixture, 'runner');
+  const run = (cwd, ...args) => {
+    const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+
+  try {
+    await mkdir(source);
+    run(source, 'init', '-q', '-b', 'main');
+    run(source, 'config', 'user.name', 'Regression Test');
+    run(source, 'config', 'user.email', 'test@example.invalid');
+    await writeFile(join(source, 'candidate.txt'), 'base\n');
+    await writeFile(join(source, 'main.txt'), 'base\n');
+    run(source, 'add', '.');
+    run(source, 'commit', '-qm', 'merge base');
+    run(source, 'branch', 'candidate');
+    await writeFile(join(source, 'main.txt'), 'main one\n');
+    run(source, 'commit', '-qam', 'advance main once');
+    await writeFile(join(source, 'main.txt'), 'main two\n');
+    run(source, 'commit', '-qam', 'advance main twice');
+    const base = run(source, 'rev-parse', 'HEAD');
+    run(source, 'switch', '-q', 'candidate');
+    await writeFile(join(source, 'candidate.txt'), 'candidate\n');
+    run(source, 'commit', '-qam', 'immutable candidate');
+    const head = run(source, 'rev-parse', 'HEAD');
+    run(fixture, 'clone', '-q', '--bare', source, remote);
+    run(fixture, 'clone', '-q', '--single-branch', '--branch', 'candidate', `file://${remote}`, runner);
+    assert.notEqual(spawnSync('git', ['cat-file', '-e', `${base}^{commit}`], { cwd: runner }).status, 0);
+
+    const review = await workflow('review-fix.yml');
+    const step = review.match(/      - name: Reject protected automation changes and calculate prospective tree[\s\S]*?        run: \|\n([\s\S]*?)\n      - name: Dispatch/)[1]
+      .split('\n').map((line) => line.slice(10)).join('\n');
+    const output = join(fixture, 'github-output');
+    const result = spawnSync('bash', ['-c', step], {
+      cwd: runner,
+      encoding: 'utf8',
+      env: { ...process.env, BASE_SHA: base, HEAD_SHA: head, RUNNER_TEMP: fixture, GITHUB_OUTPUT: output },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /BASE_SHA commit is missing locally; fetching exact SHA/);
+    assert.equal(run(runner, 'rev-parse', head), head);
+    const tree = (await readFile(output, 'utf8')).match(/^tree=([0-9a-f]{40,64})$/m)[1];
+    assert.equal(tree, run(runner, 'merge-tree', '--write-tree', base, head));
+
+    const validation = review.slice(review.indexOf('  validate-test:'), review.indexOf('  ai-review:'));
+    assert.match(validation, /RESULT_TREE: \$\{\{ steps\.merge\.outputs\.tree \}\}/);
+    assert.match(validation, /testedResultTree:\$tree/);
+    assert.match(validation, /-f tested_base_sha="\$BASE_SHA" -f tested_head_sha="\$HEAD_SHA"/);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test('Review hands its immutable MERGE_READY run to Trusted Merge by repository dispatch', async () => {
