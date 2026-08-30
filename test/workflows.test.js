@@ -87,7 +87,7 @@ test('bot Candidate PR skips normal CI while infrastructure PRs remain protected
   assert.match(ci, /workflow_dispatch:/);
 });
 
-test('observation has a deterministic green no-candidate contract', async () => {
+test('observation has a deterministic green no-candidate summary without creating an issue', async () => {
   const candidate = await workflow('self-improvement.yml');
   const validation = candidate.slice(
     candidate.indexOf('- name: Validate observation result'),
@@ -98,6 +98,9 @@ test('observation has a deterministic green no-candidate contract', async () => 
   assert.match(candidate, /사용자 영향, 데이터 무결성, 장애 복구, 보안, 접근성/);
   assert.match(candidate, /유지보수 비용 또는 개발\/운영 위험의 실질적인 감소/);
   assert.match(validation, /meaningful=false/);
+  assert.match(validation, /## NO_MEANINGFUL_CANDIDATE/);
+  assert.match(validation, /새 자기개선 후보를 생성하지 않았습니다\./);
+  assert.match(validation, />> "\$GITHUB_STEP_SUMMARY"/);
   assert.match(validation, /completing successfully without creating an issue/);
   assert.match(validation, /meaningful=true/);
   assert.match(candidate, /if: steps\.observation\.outputs\.meaningful == 'true'/);

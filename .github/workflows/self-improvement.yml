@@ -91,6 +91,8 @@ jobs:
           fi
           if [ "$(tr -d '\r' < improvement-candidate.md)" = 'NO_MEANINGFUL_CANDIDATE' ]; then
             echo 'meaningful=false' >> "$GITHUB_OUTPUT"
+            printf '%s\n' '## NO_MEANINGFUL_CANDIDATE' \
+              '새 자기개선 후보를 생성하지 않았습니다.' >> "$GITHUB_STEP_SUMMARY"
             echo 'No meaningful candidate found; completing successfully without creating an issue'
             exit 0
           fi
