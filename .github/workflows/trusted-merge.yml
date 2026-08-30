@@ -267,6 +267,23 @@ jobs:
             sleep 2
           done
           [ "$pr_merged" = true ]
+          # Only the candidate number re-authenticated against immutable
+          # publication provenance is handed to lifecycle finalization.
+          printf 'merged=true\ncandidate=%s\n' "$candidate" >> "$GITHUB_OUTPUT"
+
+      - name: Close successfully merged candidate as completed
+        if: steps.merge.outputs.merged == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CANDIDATE: ${{ steps.merge.outputs.candidate }}
+        run: |
+          set -Eeuo pipefail
+          trap 'status=$?; printf "::warning title=Candidate lifecycle finalization failed::candidate=%s line=%s command=%q exit=%s; main was already atomically updated\n" "$CANDIDATE" "$LINENO" "$BASH_COMMAND" "$status" >&2' ERR
+          case "$CANDIDATE" in ''|*[!0-9]*) exit 1;; esac
+          gh api --method PATCH "repos/$GH_REPO/issues/$CANDIDATE" \
+            -f state=closed -f state_reason=completed >/dev/null
 
       - name: Mark terminal candidate obsolete
         if: steps.merge.outputs.obsolete == 'true'

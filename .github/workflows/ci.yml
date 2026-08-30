@@ -24,6 +24,14 @@ permissions:
 
 jobs:
   test:
+    # Approval Automation publishes these bot-owned branches only for the
+    # prospective workflow_dispatch path below. Keep normal and infrastructure
+    # pull requests on this check, including similarly named human-owned PRs.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.user.login != 'github-actions[bot]' ||
+      !startsWith(github.event.pull_request.head.ref, 'codex/self-improvement-') ||
+      !startsWith(github.event.pull_request.title, '자기개선 후보 #')
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
