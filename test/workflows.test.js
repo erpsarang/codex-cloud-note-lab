@@ -75,6 +75,34 @@ test('manual CI constructs and records the prospective merge tree', async () => 
   assert.doesNotMatch(ci, /upload-artifact|prospective-merge\.json/);
 });
 
+test('bot Candidate PR skips normal CI while infrastructure PRs remain protected', async () => {
+  const ci = await workflow('ci.yml');
+  const condition = ci.slice(ci.indexOf('    if: >-'), ci.indexOf('    runs-on:', ci.indexOf('    if: >-')));
+
+  assert.match(ci, /pull_request:/);
+  assert.match(condition, /github\.event_name != 'pull_request'/);
+  assert.match(condition, /github\.event\.pull_request\.user\.login != 'github-actions\[bot\]'/);
+  assert.match(condition, /!startsWith\(github\.event\.pull_request\.head\.ref, 'codex\/self-improvement-'\)/);
+  assert.match(condition, /!startsWith\(github\.event\.pull_request\.title, '자기개선 후보 #'\)/);
+  assert.match(ci, /workflow_dispatch:/);
+});
+
+test('observation has a deterministic green no-candidate contract', async () => {
+  const candidate = await workflow('self-improvement.yml');
+  const validation = candidate.slice(
+    candidate.indexOf('- name: Validate observation result'),
+    candidate.indexOf('- name: Create improvement candidate issue'),
+  );
+
+  assert.match(candidate, /NO_MEANINGFUL_CANDIDATE/);
+  assert.match(candidate, /사용자 영향, 데이터 무결성, 장애 복구, 보안, 접근성/);
+  assert.match(candidate, /유지보수 비용 또는 개발\/운영 위험의 실질적인 감소/);
+  assert.match(validation, /meaningful=false/);
+  assert.match(validation, /completing successfully without creating an issue/);
+  assert.match(validation, /meaningful=true/);
+  assert.match(candidate, /if: steps\.observation\.outputs\.meaningful == 'true'/);
+});
+
 test('Review binds MERGE_READY to the successful merge CI run', async () => {
   const review = await workflow('review-fix.yml');
 
@@ -310,6 +338,42 @@ test('fresh Trusted Merge path retains atomic compare-and-swap publication', asy
   assert.match(trusted, /actual_tree=.*merge-tree --write-tree "\$expected_base" "\$expected_head"/);
   assert.match(trusted, /\[ "\$actual_tree" = "\$expected_tree" \]/);
   assert.match(trusted, /--force-with-lease="refs\/heads\/\$DEFAULT_BRANCH:\$expected_base"/);
+});
+
+test('Trusted Merge alone completes lifecycle after confirmed merge projection', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+  const merge = trusted.slice(
+    trusted.indexOf('- name: Validate trusted state and merge exact head'),
+    trusted.indexOf('- name: Close successfully merged candidate as completed'),
+  );
+  const close = trusted.slice(
+    trusted.indexOf('- name: Close successfully merged candidate as completed'),
+    trusted.indexOf('- name: Mark terminal candidate obsolete'),
+  );
+
+  assert.ok(merge.indexOf('[ "$pr_merged" = true ]') < merge.indexOf("printf 'merged=true\\ncandidate=%s\\n'"));
+  assert.match(close, /if: steps\.merge\.outputs\.merged == 'true'/);
+  assert.match(close, /continue-on-error: true/);
+  assert.match(close, /steps\.merge\.outputs\.candidate/);
+  assert.match(close, /--method PATCH "repos\/\$GH_REPO\/issues\/\$CANDIDATE"/);
+  assert.match(close, /-f state=closed -f state_reason=completed/);
+  assert.match(close, /Candidate lifecycle finalization failed/);
+  assert.doesNotMatch(close, /Closes #|pull request.*body|\.body/);
+});
+
+test('obsolete and ON_HOLD paths cannot completed-close a candidate', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+  const obsolete = trusted.slice(
+    trusted.indexOf('- name: Mark terminal candidate obsolete'),
+    trusted.indexOf('- name: Put a changed or unverifiable candidate ON_HOLD'),
+  );
+  const hold = trusted.slice(trusted.indexOf('- name: Put a changed or unverifiable candidate ON_HOLD'));
+
+  assert.match(obsolete, /if: steps\.merge\.outputs\.obsolete == 'true'/);
+  assert.match(hold, /if: \$\{\{ failure\(\) \}\}/);
+  for (const terminalPath of [obsolete, hold]) {
+    assert.doesNotMatch(terminalPath, /state=closed|state_reason=completed|outputs\.merged/);
+  }
 });
 
 test('final merge credential is a dedicated App token scoped to Trusted Merge', async () => {

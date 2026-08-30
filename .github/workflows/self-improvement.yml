@@ -41,7 +41,7 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Observe repository and propose one improvement
+      - name: Observe repository and propose a meaningful improvement
         id: codex
         uses: openai/codex-action@v1
         with:
@@ -52,8 +52,18 @@ jobs:
           prompt: |
             최신 상태로 체크아웃된 저장소와 테스트를 관찰하세요. 이미 구현된
             개선사항을 검토한 다음, 이 저장소에서 직접 검증할 수 있는 새로운
-            근거를 찾으세요. 이전 작업과 중복되지 않는 작은 개선 후보를 정확히
-            하나만 선정하세요.
+            근거를 찾으세요. 이전 작업과 중복되지 않는 개선 후보가 아래 가치 축
+            중 하나 이상에서 명확하고 검증 가능한 효과가 있을 때만 선정하세요.
+
+            - 사용자 영향, 데이터 무결성, 장애 복구, 보안, 접근성
+            - 명확히 재현 가능한 defect
+            - 유지보수 비용 또는 개발/운영 위험의 실질적인 감소
+
+            도달하기 어려운 입력을 위한 방어 코딩, 중복 테스트, 사소한 스타일
+            정리만 남았다면 후보를 억지로 만들지 마세요. 그 경우 다른 텍스트나
+            Markdown 없이 정확히 다음 한 줄만 반환하세요.
+
+            NO_MEANINGFUL_CANDIDATE
 
             읽기 전용 모드로 작업하세요. 파일을 수정하거나, commit을 만들거나,
             pull request 또는 GitHub issue를 생성하지 마세요.
@@ -71,18 +81,36 @@ jobs:
             가능하면 근거에 저장소 파일 경로와 줄 번호를 인용하세요. 추측이
             아니라 저장소에서 확인한 근거를 바탕으로 모든 내용을 작성하세요.
 
+      - name: Validate observation result
+        id: observation
+        run: |
+          set -euo pipefail
+          if ! grep -q '[^[:space:]]' improvement-candidate.md; then
+            echo "improvement-candidate.md is empty or contains only whitespace" >&2
+            exit 1
+          fi
+          if [ "$(tr -d '\r' < improvement-candidate.md)" = 'NO_MEANINGFUL_CANDIDATE' ]; then
+            echo 'meaningful=false' >> "$GITHUB_OUTPUT"
+            echo 'No meaningful candidate found; completing successfully without creating an issue'
+            exit 0
+          fi
+          for heading in '## 관찰' '## 근거' '## 개선 후보' '## 이 후보를 선정한 이유' \
+            '## 기대 변경사항' '## 검증 방법' '## 위험요소'; do
+            grep -Fx "$heading" improvement-candidate.md >/dev/null || {
+              echo "Missing required candidate heading: $heading" >&2
+              exit 1
+            }
+          done
+          echo 'meaningful=true' >> "$GITHUB_OUTPUT"
+
       - name: Create improvement candidate issue
+        if: steps.observation.outputs.meaningful == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TRIGGERING_PR: ${{ github.event.pull_request.number }}
           WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if ! grep -q '[^[:space:]]' improvement-candidate.md; then
-            echo "improvement-candidate.md is empty or contains only whitespace" >&2
-            exit 1
-          fi
-
           marker="<!-- self-improvement-trigger-pr:${TRIGGERING_PR} -->"
           existing_issue="$(
             gh api --paginate "repos/$GH_REPO/issues?state=all&per_page=100" \
