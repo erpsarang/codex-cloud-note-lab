@@ -1,5 +1,24 @@
 export const NOTES_STORAGE_KEY = "notes";
 
+export function parseStoredNotes(storedNotes) {
+  if (storedNotes === null) {
+    return { ok: true, notes: [] };
+  }
+
+  try {
+    const notes = JSON.parse(storedNotes);
+
+    return Array.isArray(notes) &&
+      notes.every(
+        (note) => typeof note === "string" && note.trim().length > 0,
+      )
+      ? { ok: true, notes: notes.map((note) => note.trim()) }
+      : { ok: false, notes: [] };
+  } catch {
+    return { ok: false, notes: [] };
+  }
+}
+
 export function loadNotes(storage) {
   try {
     const availableStorage =
@@ -11,18 +30,7 @@ export function loadNotes(storage) {
 
     const storedNotes = availableStorage.getItem(NOTES_STORAGE_KEY);
 
-    if (storedNotes === null) {
-      return { ok: true, notes: [] };
-    }
-
-    const notes = JSON.parse(storedNotes);
-
-    return Array.isArray(notes) &&
-      notes.every(
-        (note) => typeof note === "string" && note.trim().length > 0,
-      )
-      ? { ok: true, notes: notes.map((note) => note.trim()) }
-      : { ok: false, notes: [] };
+    return parseStoredNotes(storedNotes);
   } catch {
     return { ok: false, notes: [] };
   }

@@ -424,3 +424,105 @@ test("shows validation feedback for empty and whitespace-only notes", async () =
   delete globalThis.document;
   delete globalThis.localStorage;
 });
+
+test("synchronizes additions and deletions between two app instances", async () => {
+  const storageListeners = [];
+  const storage = new MemoryStorage();
+  globalThis.localStorage = storage;
+  globalThis.addEventListener = (type, listener) => {
+    if (type === "storage") storageListeners.push(listener);
+  };
+
+  function createDocument() {
+    const elements = {
+      "#note-form": new FakeElement("form"),
+      "#note-input": new FakeElement("textarea"),
+      "#note-error": new FakeElement("p"),
+      "#storage-status": new FakeElement("p"),
+      "#empty-state": new FakeElement("p"),
+      "#note-list": new FakeElement("ul"),
+    };
+    return {
+      elements,
+      document: {
+        activeElement: null,
+        querySelector(selector) {
+          return elements[selector];
+        },
+        createElement(tagName) {
+          return new FakeElement(tagName);
+        },
+      },
+    };
+  }
+
+  const first = createDocument();
+  globalThis.document = first.document;
+  await import(`../app.js?first-tab=${Date.now()}`);
+
+  const second = createDocument();
+  globalThis.document = second.document;
+  await import(`../app.js?second-tab=${Date.now()}`);
+
+  first.elements["#note-input"].value = "From first tab";
+  first.elements["#note-form"].dispatch("submit");
+  storageListeners[1]({ key: "notes", newValue: storage.getItem("notes") });
+
+  second.elements["#note-input"].value = "From second tab";
+  second.elements["#note-form"].dispatch("submit");
+  storageListeners[0]({ key: "notes", newValue: storage.getItem("notes") });
+
+  const noteTexts = (instance) =>
+    instance.elements["#note-list"].children.map(
+      (item) => item.children[0].textContent,
+    );
+  assert.deepEqual(noteTexts(first), ["From first tab", "From second tab"]);
+  assert.deepEqual(noteTexts(second), ["From first tab", "From second tab"]);
+
+  first.elements["#note-list"].children[0].children[1].dispatch("click");
+  storageListeners[1]({ key: "notes", newValue: storage.getItem("notes") });
+  assert.deepEqual(noteTexts(second), ["From second tab"]);
+
+  delete globalThis.addEventListener;
+  delete globalThis.document;
+  delete globalThis.localStorage;
+});
+
+test("rejects invalid external state and blocks a silent overwrite", async () => {
+  let storageListener;
+  const form = new FakeElement("form");
+  const input = new FakeElement("textarea");
+  const storageStatus = new FakeElement("p");
+  globalThis.localStorage = new MemoryStorage(["Safe note"]);
+  globalThis.addEventListener = (type, listener) => {
+    if (type === "storage") storageListener = listener;
+  };
+  globalThis.document = {
+    activeElement: null,
+    querySelector(selector) {
+      return {
+        "#note-form": form,
+        "#note-input": input,
+        "#note-error": new FakeElement("p"),
+        "#storage-status": storageStatus,
+        "#empty-state": new FakeElement("p"),
+        "#note-list": new FakeElement("ul"),
+      }[selector];
+    },
+    createElement(tagName) {
+      return new FakeElement(tagName);
+    },
+  };
+
+  await import(`../app.js?invalid-external=${Date.now()}`);
+  storageListener({ key: "notes", newValue: "not valid JSON" });
+  input.value = "Must not overwrite";
+  form.dispatch("submit");
+
+  assert.equal(localStorage.getItem("notes"), '["Safe note"]');
+  assert.match(storageStatus.textContent, /저장되지 않았습니다/);
+
+  delete globalThis.addEventListener;
+  delete globalThis.document;
+  delete globalThis.localStorage;
+});
