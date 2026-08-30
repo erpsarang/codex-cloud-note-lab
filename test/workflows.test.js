@@ -297,7 +297,7 @@ test('fresh Trusted Merge path retains atomic compare-and-swap publication', asy
   assert.match(trusted, /--force-with-lease="refs\/heads\/\$DEFAULT_BRANCH:\$expected_base"/);
 });
 
-test('final merge credential is explicitly scoped to Trusted Merge git operations', async () => {
+test('final merge credential is a dedicated App token scoped to Trusted Merge', async () => {
   const names = [
     'approval-automation.yml',
     'ci.yml',
@@ -313,10 +313,18 @@ test('final merge credential is explicitly scoped to Trusted Merge git operation
   );
 
   for (const contents of workflows.slice(0, -1)) {
-    assert.doesNotMatch(contents, /SELF_IMPROVEMENT_MERGE_TOKEN/);
+    assert.doesNotMatch(contents, /SELF_IMPROVEMENT_MERGE_(?:TOKEN|APP_ID|APP_PRIVATE_KEY)/);
   }
-  assert.equal(trusted.match(/SELF_IMPROVEMENT_MERGE_TOKEN/g)?.length, 1);
-  assert.match(merge, /GH_TOKEN: \$\{\{ secrets\.SELF_IMPROVEMENT_MERGE_TOKEN \}\}/);
+  assert.doesNotMatch(trusted, /SELF_IMPROVEMENT_MERGE_TOKEN/);
+  const mint = trusted.slice(
+    trusted.indexOf('- name: Mint final merge authority token'),
+    trusted.indexOf('- name: Validate trusted state and merge exact head'),
+  );
+  assert.match(mint, /id: merge-app-token/);
+  assert.match(mint, /uses: actions\/create-github-app-token@v2/);
+  assert.match(mint, /app-id: \$\{\{ secrets\.SELF_IMPROVEMENT_MERGE_APP_ID \}\}/);
+  assert.match(mint, /private-key: \$\{\{ secrets\.SELF_IMPROVEMENT_MERGE_APP_PRIVATE_KEY \}\}/);
+  assert.match(merge, /GH_TOKEN: \$\{\{ steps\.merge-app-token\.outputs\.token \}\}/);
   assert.match(merge, /test -n "\$GH_TOKEN"/);
   assert.match(merge, /merge_auth_header="\$\(printf 'x-access-token:%s' "\$GH_TOKEN" \| base64 \| tr -d '\\n'\)"/);
   assert.doesNotMatch(merge, /gh auth setup-git|credential\.helper/);
