@@ -88,7 +88,7 @@ jobs:
             (.reviewRunId > 0) and (.reviewRunAttempt > 0) and
             .ciContext == "test" and .ciResult == "success" and
             (.publicationRunId > 0) and (.publicationRunAttempt > 0) and
-            ((.staleRecoveryCount // 0) == 0 or .staleRecoveryCount == 1) and
+            (.baseSha | test("^[0-9a-f]{40}$")) and
             (has("reviewFixAttempts") | not)' "$CONTRACT" >/dev/null
           jq -e --argjson run "$REVIEW_RUN_ID" --argjson attempt "$REVIEW_RUN_ATTEMPT" \
             --arg source "$REVIEW_WORKFLOW_SOURCE_SHA" '
@@ -106,10 +106,6 @@ jobs:
           expected_fingerprint="$(jq -r .requirementsFingerprint "$CONTRACT")"
           publication_run_id="$(jq -r .publicationRunId "$CONTRACT")"
           publication_run_attempt="$(jq -r .publicationRunAttempt "$CONTRACT")"
-          # Version-2 contracts already in flight when stale recovery was
-          # deployed have no count; they are the initial (count-zero) review.
-          stale_recovery_count="$(jq -r '(.staleRecoveryCount // 0)' "$CONTRACT")"
-
           # Independently re-read the immutable Approval Automation artifact;
           # mutable PR names, titles, branches, and bodies grant no authority.
           publication_run="$(gh api "repos/$GH_REPO/actions/runs/$publication_run_id")"
@@ -127,10 +123,12 @@ jobs:
           jq -e --argjson candidate "$candidate" --argjson pr "$pr_number" \
             --arg head "$expected_head" --arg fingerprint "$expected_fingerprint" \
             --argjson run "$publication_run_id" --argjson attempt "$publication_run_attempt" \
-            --arg workflow "$expected_publication_workflow" \
-            '.candidate==$candidate and .pullRequest==$pr and .publishedHeadSha==$head and
+            --arg workflow "$expected_publication_workflow" --arg base "$expected_base" \
+            '.version==2 and .candidate==$candidate and .pullRequest==$pr and
+             .implementationBaseSha==$base and .publishedHeadSha==$head and
              .requirementsFingerprint==$fingerprint and .publicationRunId==$run and
-             .publicationRunAttempt==$attempt and .publicationWorkflow==$workflow' "$RUNNER_TEMP/publication.json" >/dev/null
+             .publicationRunAttempt==$attempt and .publicationWorkflow==$workflow' \
+            "$RUNNER_TEMP/publication.json" >/dev/null
           jq -e --arg sha "$(jq -r .publicationSourceSha "$RUNNER_TEMP/publication.json")" \
             --arg ref "$publication_source_branch" \
             '.head_sha == $sha and .head_branch == $ref' <<<"$publication_run" >/dev/null
@@ -157,9 +155,8 @@ jobs:
             --jq '.[] | .filename, (.previous_filename // empty)' |
             if grep -Eq '^\.github/(workflows|actions)/'; then exit 1; fi
 
-          # Never merge evidence tested against a stale base. One new Review may
-          # be requested for the unchanged candidate head and current base. If
-          # that replacement also goes stale, fail closed instead of looping.
+          # Never merge evidence tested against a stale implementation base.
+          # Stale candidates are obsolete; no revalidation or recovery is dispatched.
           # Read ref/PR/ref until both ref reads agree. The branch ref, rather
           # than the PR API's historical base.sha, defines the current base.
           # This gives stale-base handling a coherent bounded snapshot even if
@@ -180,12 +177,7 @@ jobs:
             '.state == "open" and .draft == false and .head.sha == $head and
              .base.ref == $branch' <<<"$pr" >/dev/null
           if [ "$current_base" != "$expected_base" ]; then
-            [ "$stale_recovery_count" -eq 0 ]
-            jq -e --arg head "$expected_head" --arg branch "$DEFAULT_BRANCH" \
-              '.state == "open" and .draft == false and .head.sha == $head and
-               .base.ref == $branch' <<<"$pr" >/dev/null
-            printf 'stale=true\ncurrent_base=%s\npr=%s\nhead=%s\npublication_run_id=%s\npublication_run_attempt=%s\n' \
-              "$current_base" "$pr_number" "$expected_head" "$publication_run_id" "$publication_run_attempt" >> "$GITHUB_OUTPUT"
+            printf 'stale=true\ncandidate=%s\n' "$candidate" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo 'stale=false' >> "$GITHUB_OUTPUT"
@@ -216,30 +208,20 @@ jobs:
           # GitHub should recognize the head as merged after the atomic ref update.
           gh api "repos/$GH_REPO/pulls/$pr_number" --jq .merged | grep -Fx true
 
-      - name: Request one current-base revalidation without merge authority
-        id: revalidate
+      - name: Mark stale candidate obsolete
         if: steps.merge.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.merge.outputs.pr }}
-          HEAD_SHA: ${{ steps.merge.outputs.head }}
-          CURRENT_BASE: ${{ steps.merge.outputs.current_base }}
-          PUBLICATION_RUN_ID: ${{ steps.merge.outputs.publication_run_id }}
-          PUBLICATION_RUN_ATTEMPT: ${{ steps.merge.outputs.publication_run_attempt }}
+          CANDIDATE: ${{ steps.merge.outputs.candidate }}
         run: |
           set -euo pipefail
-          gh api --method POST "repos/$GH_REPO/dispatches" \
-            -f event_type=self-improvement-review \
-            -F "client_payload[pr_number]=$PR_NUMBER" \
-            -F "client_payload[publication_run_id]=$PUBLICATION_RUN_ID" \
-            -F "client_payload[publication_run_attempt]=$PUBLICATION_RUN_ATTEMPT" \
-            -F 'client_payload[stale_recovery_count]=1' \
-            -f "client_payload[stale_recovery_base_sha]=$CURRENT_BASE" \
-            -f "client_payload[stale_recovery_head_sha]=$HEAD_SHA"
+          gh label create obsolete --repo "$GH_REPO" --color 6E7781 \
+            --description 'Candidate no longer represents the current default branch' --force
+          gh issue edit "$CANDIDATE" --repo "$GH_REPO" --add-label obsolete
 
       - name: Put a changed or unverifiable candidate ON_HOLD
-        if: ${{ failure() && !(steps.merge.outputs.stale == 'true' && steps.revalidate.outcome == 'success') }}
+        if: ${{ failure() }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
