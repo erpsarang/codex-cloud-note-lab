@@ -16,8 +16,20 @@ if (!loadResult.ok) {
 }
 
 function persistNotes() {
-  if (saveNotes(notes)) {
+  if (!storageStateKnown) {
+    const retryResult = loadNotes();
+
+    if (!retryResult.ok) {
+      storageStatus.textContent =
+        "변경 사항이 이 브라우저에 저장되지 않았습니다.";
+      return;
+    }
+
+    notes.unshift(...retryResult.notes);
     storageStateKnown = true;
+  }
+
+  if (saveNotes(notes)) {
     storageStatus.textContent = "";
   } else {
     storageStatus.textContent = "변경 사항이 이 브라우저에 저장되지 않았습니다.";

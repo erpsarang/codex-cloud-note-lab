@@ -299,9 +299,69 @@ test("keeps additions and deletions working when storage access fails", async ()
   noteList.children[0].children[1].dispatch("click");
   assert.equal(noteList.children.length, 0);
   assert.equal(document.activeElement, input);
-  assert.equal(storageStatus.textContent, "");
+  assert.equal(
+    storageStatus.textContent,
+    "변경 사항이 이 브라우저에 저장되지 않았습니다.",
+  );
   assert.equal(storageStatus.hidden, false);
-  assert.equal(emptyState.hidden, false);
+  assert.equal(emptyState.hidden, true);
+
+  delete globalThis.document;
+  delete globalThis.localStorage;
+});
+
+test("merges stored notes before saving after an initial read failure", async () => {
+  const form = new FakeElement("form");
+  const input = new FakeElement("textarea");
+  const inputError = new FakeElement("p");
+  const storageStatus = new FakeElement("p");
+  const emptyState = new FakeElement("p");
+  const noteList = new FakeElement("ul");
+  const storedNotes = ["Existing important note"];
+  let getItemCalls = 0;
+  globalThis.localStorage = {
+    getItem() {
+      getItemCalls += 1;
+      if (getItemCalls === 1) {
+        throw new Error("Temporary storage read failure");
+      }
+      return JSON.stringify(storedNotes);
+    },
+    setItem(key, value) {
+      assert.equal(key, "notes");
+      storedNotes.splice(0, storedNotes.length, ...JSON.parse(value));
+    },
+  };
+  globalThis.document = {
+    activeElement: null,
+    querySelector(selector) {
+      return {
+        "#note-form": form,
+        "#note-input": input,
+        "#note-error": inputError,
+        "#storage-status": storageStatus,
+        "#empty-state": emptyState,
+        "#note-list": noteList,
+      }[selector];
+    },
+    createElement(tagName) {
+      return new FakeElement(tagName);
+    },
+  };
+
+  await import(`../app.js?temporary-load-failure=${Date.now()}`);
+
+  assert.equal(storageStatus.textContent, "저장된 메모를 불러오지 못했습니다.");
+
+  input.value = "New note";
+  form.dispatch("submit");
+
+  assert.deepEqual(storedNotes, ["Existing important note", "New note"]);
+  assert.deepEqual(
+    noteList.children.map((item) => item.children[0].textContent),
+    ["Existing important note", "New note"],
+  );
+  assert.equal(storageStatus.textContent, "");
 
   delete globalThis.document;
   delete globalThis.localStorage;
