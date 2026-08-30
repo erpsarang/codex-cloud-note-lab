@@ -203,12 +203,36 @@ test('stale after Review is obsolete and never dispatches recovery', async () =>
 
   assert.match(stale, /for snapshot_attempt in 1 2 3; do/);
   assert.match(stale, /if \[ "\$current_base" != "\$expected_base" \]; then/);
-  assert.match(stale, /stale=true/);
+  assert.match(stale, /obsolete=true/);
   assert.match(stale, /exit 0/);
   assert.doesNotMatch(stale, /git push|commit-tree/);
-  assert.match(trusted, /name: Mark stale candidate obsolete/);
+  assert.match(trusted, /name: Mark terminal candidate obsolete/);
   assert.match(trusted, /--add-label obsolete/);
   assert.doesNotMatch(trusted, /event_type=self-improvement-review/);
+});
+
+test('Trusted Merge terminally obsoletes authenticated version-1 publications during rollout', async () => {
+  const trusted = await workflow('trusted-merge.yml');
+  const merge = trusted.slice(
+    trusted.indexOf('- name: Validate trusted state and merge exact head'),
+    trusted.indexOf('- name: Mark terminal candidate obsolete'),
+  );
+  const commonBinding = merge.indexOf("'(.version == 1 or .version == 2) and");
+  const runBinding = merge.indexOf("'.head_sha == $sha and .head_branch == $ref'");
+  const versionOne = merge.indexOf('if [ "$publication_version" = 1 ]; then');
+  const obsolete = merge.indexOf("printf 'obsolete=true\\ncandidate=%s\\n'", versionOne);
+  const versionTwo = merge.indexOf('[ "$publication_version" = 2 ]', versionOne);
+  const mergeTokenAction = merge.indexOf('git push origin', versionTwo);
+
+  assert.ok(commonBinding >= 0 && runBinding > commonBinding && versionOne > runBinding);
+  assert.match(merge, /\.candidate==\$candidate and \.pullRequest==\$pr/);
+  assert.match(merge, /\.publicationRunId==\$run and\n\s+\.publicationRunAttempt==\$attempt/);
+  assert.ok(obsolete > versionOne && versionTwo > obsolete && mergeTokenAction > versionTwo);
+  assert.match(merge.slice(versionOne, versionTwo), /authenticated v1/);
+  assert.match(merge.slice(obsolete, versionTwo), /exit 0/);
+  assert.doesNotMatch(merge.slice(versionOne, versionTwo), /implementationBaseSha|git push|gh api --method (?:PUT|POST|PATCH)/);
+  assert.match(merge.slice(versionTwo), /\.implementationBaseSha == \$base/);
+  assert.match(trusted, /if: steps\.merge\.outputs\.obsolete == 'true'/);
 });
 
 test('Trusted Merge obtains a coherent default-branch snapshot', async () => {
@@ -267,7 +291,7 @@ test('Review terminally obsoletes authenticated version-1 publications during ro
 test('fresh Trusted Merge path retains atomic compare-and-swap publication', async () => {
   const trusted = await workflow('trusted-merge.yml');
 
-  assert.match(trusted, /echo 'stale=false' >> "\$GITHUB_OUTPUT"/);
+  assert.match(trusted, /echo 'obsolete=false' >> "\$GITHUB_OUTPUT"/);
   assert.match(trusted, /actual_tree=.*merge-tree --write-tree "\$expected_base" "\$expected_head"/);
   assert.match(trusted, /\[ "\$actual_tree" = "\$expected_tree" \]/);
   assert.match(trusted, /--force-with-lease="refs\/heads\/\$DEFAULT_BRANCH:\$expected_base"/);
@@ -340,7 +364,8 @@ test('publication provenance is immutable and authorizes the exact current head'
   assert.match(publication, /implementationBaseSha:\$implementationBase,publishedHeadSha:\$head/);
   assert.match(publication, /publishedHeadSha:\$head,publicationWorkflow:\$workflow/);
   assert.match(review, /\.implementationBaseSha \| test\("\^\[0-9a-f\]\{40\}\$"\)/);
-  assert.match(trusted, /\.implementationBaseSha==\$base and \.publishedHeadSha==\$head/);
+  assert.match(trusted, /\.publishedHeadSha==\$head/);
+  assert.match(trusted, /\.implementationBaseSha == \$base/);
   assert.match(review, /\.head\.sha == \$head/);
   assert.doesNotMatch(review, /startsWith\(github\.event\.pull_request\.head\.ref/);
   assert.match(trusted, /publication-provenance\.json/);

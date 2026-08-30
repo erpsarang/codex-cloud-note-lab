@@ -123,15 +123,30 @@ jobs:
           jq -e --argjson candidate "$candidate" --argjson pr "$pr_number" \
             --arg head "$expected_head" --arg fingerprint "$expected_fingerprint" \
             --argjson run "$publication_run_id" --argjson attempt "$publication_run_attempt" \
-            --arg workflow "$expected_publication_workflow" --arg base "$expected_base" \
-            '.version==2 and .candidate==$candidate and .pullRequest==$pr and
-             .implementationBaseSha==$base and .publishedHeadSha==$head and
+            --arg workflow "$expected_publication_workflow" \
+            '(.version == 1 or .version == 2) and
+             .candidate==$candidate and .pullRequest==$pr and
+             .publishedHeadSha==$head and
              .requirementsFingerprint==$fingerprint and .publicationRunId==$run and
              .publicationRunAttempt==$attempt and .publicationWorkflow==$workflow' \
             "$RUNNER_TEMP/publication.json" >/dev/null
           jq -e --arg sha "$(jq -r .publicationSourceSha "$RUNNER_TEMP/publication.json")" \
             --arg ref "$publication_source_branch" \
             '.head_sha == $sha and .head_branch == $ref' <<<"$publication_run" >/dev/null
+
+          publication_version="$(jq -r .version "$RUNNER_TEMP/publication.json")"
+          if [ "$publication_version" = 1 ]; then
+            # A Review begun during the v1 -> v2 rollout can dispatch this v2
+            # contract after the workflow changes. Its authenticated v1
+            # publication lacks the v2 implementation-base field, so terminally
+            # discard the candidate rather than guessing a base or granting merge authority.
+            printf 'obsolete=true\ncandidate=%s\n' "$candidate" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$publication_version" = 2 ]
+          jq -e --arg base "$expected_base" \
+            '.implementationBaseSha == $base' \
+            "$RUNNER_TEMP/publication.json" >/dev/null
 
           issue="$(gh api "repos/$GH_REPO/issues/$candidate")"
           jq -e '.state == "open" and ([.labels[].name] | index("approved") != null)' <<<"$issue" >/dev/null
@@ -177,10 +192,10 @@ jobs:
             '.state == "open" and .draft == false and .head.sha == $head and
              .base.ref == $branch' <<<"$pr" >/dev/null
           if [ "$current_base" != "$expected_base" ]; then
-            printf 'stale=true\ncandidate=%s\n' "$candidate" >> "$GITHUB_OUTPUT"
+            printf 'obsolete=true\ncandidate=%s\n' "$candidate" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo 'stale=false' >> "$GITHUB_OUTPUT"
+          echo 'obsolete=false' >> "$GITHUB_OUTPUT"
           # GitHub may temporarily report mergeable=null while recomputing after
           # a base update. Require mergeability only after ruling out stale evidence.
           jq -e '.mergeable == true' <<<"$pr" >/dev/null
@@ -208,8 +223,8 @@ jobs:
           # GitHub should recognize the head as merged after the atomic ref update.
           gh api "repos/$GH_REPO/pulls/$pr_number" --jq .merged | grep -Fx true
 
-      - name: Mark stale candidate obsolete
-        if: steps.merge.outputs.stale == 'true'
+      - name: Mark terminal candidate obsolete
+        if: steps.merge.outputs.obsolete == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
